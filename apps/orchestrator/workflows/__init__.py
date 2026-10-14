@@ -21,7 +21,7 @@ from router import hitl_skills
 DEFAULT_RESEARCH_DAG = {
     "title": "Claude Code Agent",
     "nodes": [
-        {"id": "run", "skill": "claude-code"},
+        {"id": "run", "agent_key": "claude-code"},
     ],
 }
 
@@ -164,27 +164,29 @@ class WorkflowService:
 
     def _dag_to_plan(self, dag: dict[str, Any], *, goal: str, title: str) -> TaskPlan:
         nodes_raw = dag.get("nodes") or []
-        nodes = [
-            PlanNode(
-                id=str(n["id"]),
-                skill=str(n["skill"]),
-                depends_on=[str(d) for d in (n.get("depends_on") or [])],
-                requires_approval=bool(n.get("requires_approval"))
-                or str(n["skill"]) in hitl_skills()
-                or str(n.get("approval_mode") or "").strip().lower() in {"system", "both"},
-                approval_mode=(
-                    str(n["approval_mode"]).strip().lower()
-                    if isinstance(n.get("approval_mode"), str) and n["approval_mode"].strip()
-                    else None
-                ),
-                approver_agent=(
-                    str(n["approver_agent"]).strip()
-                    if isinstance(n.get("approver_agent"), str) and n["approver_agent"].strip()
-                    else None
-                ),
+        nodes = []
+        for n in nodes_raw:
+            key = str(n.get("agent_key") or "")
+            nodes.append(
+                PlanNode(
+                    id=str(n["id"]),
+                    agent_key=key,
+                    depends_on=[str(d) for d in (n.get("depends_on") or [])],
+                    requires_approval=bool(n.get("requires_approval"))
+                    or key in hitl_skills()
+                    or str(n.get("approval_mode") or "").strip().lower() in {"system", "both"},
+                    approval_mode=(
+                        str(n["approval_mode"]).strip().lower()
+                        if isinstance(n.get("approval_mode"), str) and n["approval_mode"].strip()
+                        else None
+                    ),
+                    approver_agent=(
+                        str(n["approver_agent"]).strip()
+                        if isinstance(n.get("approver_agent"), str) and n["approver_agent"].strip()
+                        else None
+                    ),
+                )
             )
-            for n in nodes_raw
-        ]
         return TaskPlan(title=title, goal=goal, nodes=nodes)
 
     def _serialize(self, row: dict[str, Any]) -> dict[str, Any]:

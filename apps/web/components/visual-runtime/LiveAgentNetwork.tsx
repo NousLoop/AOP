@@ -20,6 +20,15 @@ import { reactFlowOnError, useClientMounted } from "@/lib/reactFlow";
 const COL_W = 200;
 const ROW_H = 140;
 
+function failSubtitle(status: string, error?: string): string {
+  const e = (error || "").trim();
+  if (!e) return status;
+  if (e.includes("余额不足") || /insufficient balance/i.test(e) || /api error:\s*402/i.test(e)) {
+    return "余额不足";
+  }
+  return e.length > 22 ? `${e.slice(0, 22)}…` : e;
+}
+
 function statusColor(status: string): string {
   const s = (status || "").toLowerCase();
   if (s === "running" || s === "active") return "#3dffa8";
@@ -49,8 +58,10 @@ function VrNode({ data }: NodeProps) {
   const label = String(data.label || "");
   const ready = data.runnerReady as boolean | undefined;
   const hint = typeof data.runnerHint === "string" ? data.runnerHint : "";
+  const err = typeof data.error === "string" ? data.error : "";
   const color = statusColor(status);
-  const running = status === "running" || status === "active";
+  const running =
+    data.status === "running" || data.status === "active";
   const waiting =
     status === "waiting" ||
     status === "waiting_for_user" ||
@@ -59,8 +70,10 @@ function VrNode({ data }: NodeProps) {
   const size =
     kind === "task" ? 72 : kind === "tool" || kind === "data" ? 40 : kind === "error" ? 48 : 56;
   const radius = kind === "data" ? 6 : kind === "tool" ? 8 : "50%";
-  const subtitle =
-    kind === "agent" && ready === false
+  const failed = status === "failed" || status === "error" || status === "timeout";
+  const subtitle = failed
+    ? failSubtitle(status, err)
+    : kind === "agent" && ready === false
       ? hint
         ? hint.length > 22
           ? `${hint.slice(0, 22)}…`
@@ -118,6 +131,11 @@ function VrNode({ data }: NodeProps) {
 const MemoVrNode = memo(VrNode);
 const NODE_TYPES = Object.freeze({ vr: MemoVrNode }) as unknown as NodeTypes;
 
+function isDispatcher(n: VisualGraphNode): boolean {
+  const id = (n.agent_id || n.label || n.id || "").toLowerCase();
+  return id === "orchestrator" || id.endsWith(":orchestrator") || n.label === "orchestrator";
+}
+
 function layout(
   snapshot: VisualGraphSnapshot | null,
   readiness?: PreflightAgent[],
@@ -139,8 +157,10 @@ function layout(
   }
 
   const task = rawNodes.find((n) => n.type === "task");
-  const agents = rawNodes.filter((n) => n.type === "agent");
-  const others = rawNodes.filter((n) => n.type !== "task" && n.type !== "agent");
+  const agents = rawNodes.filter((n) => n.type === "agent" && !isDispatcher(n));
+  const others = rawNodes.filter(
+    (n) => n.type !== "task" && n.type !== "agent" && n.type !== "error",
+  );
 
   const positioned: Node[] = [];
   if (task) {
@@ -148,7 +168,13 @@ function layout(
       id: task.id,
       type: "vr",
       position: { x: Math.max(0, (agents.length - 1) * (COL_W / 2)), y: 40 },
-      data: { kind: "task", label: task.label, status: task.status, meta: task },
+      data: {
+        kind: "task",
+        label: task.label,
+        status: task.status,
+        meta: task,
+        error: (task.metadata as { error?: string } | undefined)?.error,
+      },
     });
   }
 
@@ -165,6 +191,7 @@ function layout(
         label: a.label,
         status: a.status,
         meta: a,
+        error: (a.metadata as { error?: string } | undefined)?.error,
         visit: (a.metadata as { visit_count?: number } | undefined)?.visit_count,
         runnerReady: pf ? pf.runner_ready : undefined,
         runnerHint: pf && !pf.runner_ready ? pf.runner_reason || (pf.reachable ? "stub" : "offline") : "",
@@ -177,13 +204,27 @@ function layout(
       id: o.id,
       type: "vr",
       position: { x: (i % 6) * 160, y: 200 + Math.ceil(agents.length / 5) * ROW_H + 120 },
-      data: { kind: o.type, label: o.label, status: o.status, meta: o },
+      data: {
+        kind: o.type,
+        label: o.label,
+        status: o.status,
+        meta: o,
+        error: (o.metadata as { error?: string } | undefined)?.error,
+      },
     });
   });
 
   const idSet = new Set(positioned.map((n) => n.id));
-  const edges: Edge[] = rawEdges
-    .filter((e) => idSet.has(e.source) && idSet.has(e.target))
+  const taskId = task?.id;
+  const remapped = rawEdges.map((e) => {
+    let source = e.source;
+    let target = e.target;
+    if (source.toLowerCase().includes("orchestrator") && taskId) source = taskId;
+    if (target.toLowerCase().includes("orchestrator") && taskId) target = taskId;
+    return { ...e, source, target };
+  });
+  const edges: Edge[] = remapped
+    .filter((e) => idSet.has(e.source) && idSet.has(e.target) && e.source !== e.target)
     .map((e: VisualGraphEdge) => {
       const active = (e.status || "").toLowerCase() === "active" || (e.status || "") === "running";
       return {

@@ -9,6 +9,7 @@ log_dir = "~/.aop/node/logs"
 heartbeat_interval_secs = 30
 mgmt_listen = "127.0.0.1:7920"
 register_endpoint = "http://127.0.0.1:7920/"
+# Mgmt URL only. aopd does not register this as an A2A agent.
 update_manifest_url = ""
 autostart = true
 

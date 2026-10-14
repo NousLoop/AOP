@@ -22,6 +22,7 @@ from ..protocol import (
     TokenUsage,
 )
 from ._cli_common import (
+    apply_provider_balance_failure,
     bump_stream_limit,
     compose_cli_prompt,
     readline_unlimited,
@@ -40,6 +41,15 @@ from ..preview import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _ok_or_balance(result: HarnessResult, emit) -> HarnessResult:
+    result = apply_provider_balance_failure(result)
+    if result.status != HarnessStatus.OK:
+        await emit(HarnessEventType.ERROR, {"error": result.error})
+        return result
+    await emit(HarnessEventType.FINAL, {"state": "completed"})
+    return result
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -284,13 +294,15 @@ class ClaudeCliRunner:
                     usage=usage,
                     data={"runner": "ClaudeCliRunner", "exitCode": rc, "livePreview": True},
                 )
-            await _emit(HarnessEventType.FINAL, {"state": "completed"})
-            return HarnessResult(
-                text=text,
-                status=HarnessStatus.OK,
-                skill_id=skill_id,
-                usage=usage,
-                data={"runner": "ClaudeCliRunner", "exitCode": rc, "livePreview": True},
+            return await _ok_or_balance(
+                HarnessResult(
+                    text=text,
+                    status=HarnessStatus.OK,
+                    skill_id=skill_id,
+                    usage=usage,
+                    data={"runner": "ClaudeCliRunner", "exitCode": rc, "livePreview": True},
+                ),
+                _emit,
             )
 
         try:
@@ -387,17 +399,19 @@ class ClaudeCliRunner:
                 data={"runner": "ClaudeCliRunner", "exitCode": rc, "stderr": err[:1000]},
             )
 
-        await _emit(HarnessEventType.FINAL, {"state": "completed"})
-        return HarnessResult(
-            text=text,
-            status=HarnessStatus.OK,
-            skill_id=skill_id,
-            usage=usage,
-            data={
-                "runner": "ClaudeCliRunner",
-                "exitCode": rc,
-                "stderr": "".join(stderr_bits)[:500] if stderr_bits else "",
-            },
+        return await _ok_or_balance(
+            HarnessResult(
+                text=text,
+                status=HarnessStatus.OK,
+                skill_id=skill_id,
+                usage=usage,
+                data={
+                    "runner": "ClaudeCliRunner",
+                    "exitCode": rc,
+                    "stderr": "".join(stderr_bits)[:500] if stderr_bits else "",
+                },
+            ),
+            _emit,
         )
 
     async def _handle_obj(

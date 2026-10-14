@@ -343,7 +343,7 @@ class RuntimeGraphService:
             agent = n.get("agent_id") or n.get("assigned_agent_id")
             assigned[key] = {
                 "agent_id": str(agent) if agent else "",
-                "skill": n.get("skill"),
+                "agent_key": n.get("agent_key"),
                 "status": n.get("status"),
                 "handoff": n.get("handoff"),
             }
@@ -358,7 +358,11 @@ class RuntimeGraphService:
             if not nid:
                 continue
             deps_map[nid] = [str(d) for d in (pn.get("depends_on") or [])]
-            skills[nid] = str(pn.get("skill") or assigned.get(nid, {}).get("skill") or nid)
+            skills[nid] = str(
+                pn.get("agent_key")
+                or assigned.get(nid, {}).get("agent_key")
+                or nid
+            )
 
         depth_of: dict[str, int] = {}
 
@@ -427,7 +431,7 @@ class RuntimeGraphService:
                     "label": skills.get(nid) or nid,
                     "task_id": tid,
                     "status": info.get("status"),
-                    "skill": skills.get(nid) or info.get("skill"),
+                    "agent_key": skills.get(nid) or info.get("agent_key"),
                     "depth": depth_of.get(nid, 1),
                     "agent_id": target_id,
                     "plan_node_id": nid,
@@ -478,7 +482,7 @@ class RuntimeGraphService:
                     "target": target_id,
                     "task_id": tid,
                     "parent_task_id": None,
-                    "skill": skills.get(nid) or info.get("skill"),
+                    "skill": skills.get(nid) or info.get("agent_key"),
                     "reason": reason,
                     "artifact_ids": pass_arts,
                     "handoff": pass_ho,

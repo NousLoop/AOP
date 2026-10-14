@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -437,12 +436,6 @@ export function SettingsPageView() {
               访问 · 租户 · 计费 · 运维
             </p>
           </div>
-          <Link
-            href="/workflows"
-            className="font-mono text-[10px] uppercase tracking-[0.12em] text-mist-500 hover:text-mist-200 lg:hidden"
-          >
-            模板
-          </Link>
         </div>
         <nav className="flex gap-4 overflow-x-auto px-3 pb-3 lg:block lg:space-y-4 lg:overflow-visible lg:px-2 lg:pb-4">
           {NAV_GROUPS.map((group) => (
@@ -473,17 +466,6 @@ export function SettingsPageView() {
               </div>
             </div>
           ))}
-          <div className="mt-3 hidden border-t border-white/10 pt-3 lg:block">
-            <div className="px-1 pb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-mist-500">
-              高级
-            </div>
-            <Link
-              href="/workflows"
-              className="block rounded-lg px-2.5 py-2 font-mono text-[11px] uppercase tracking-[0.1em] text-mist-400 hover:bg-white/5 hover:text-mist-100"
-            >
-              编排模板
-            </Link>
-          </div>
         </nav>
       </aside>
 
@@ -779,9 +761,9 @@ export function SettingsPageView() {
                 </div>
                 <div className="overflow-hidden rounded-2xl border border-white/10">
                   <div className="border-b border-white/10 px-4 py-3 font-mono text-[10px] uppercase tracking-[0.16em] text-mist-400">
-                    By Skill
+                    By Agent
                   </div>
-                  {(billing.agent_runs?.by_skill || []).length === 0 ? (
+                  {(billing.agent_runs?.by_agent_key || []).length === 0 ? (
                     <p className="px-4 py-8 text-center text-sm text-mist-400">
                       窗口内无 agent runs
                     </p>
@@ -789,17 +771,17 @@ export function SettingsPageView() {
                     <table className="w-full text-left text-sm">
                       <thead className="bg-ink-900/80 font-mono text-[10px] uppercase text-mist-400">
                         <tr>
-                          <th className="px-4 py-2">Skill</th>
+                          <th className="px-4 py-2">Agent</th>
                           <th className="px-4 py-2">Runs</th>
                           <th className="px-4 py-2">Unit</th>
                           <th className="px-4 py-2">Est.</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {billing.agent_runs.by_skill.map((row) => (
-                          <tr key={row.skill} className="border-t border-white/10">
+                        {billing.agent_runs.by_agent_key.map((row) => (
+                          <tr key={row.agent_key} className="border-t border-white/10">
                             <td className="px-4 py-2 font-mono text-xs text-signal-dim">
-                              {row.skill}
+                              {row.agent_key}
                             </td>
                             <td className="px-4 py-2 font-mono text-xs text-mist-300">
                               {row.runs}

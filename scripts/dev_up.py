@@ -5,7 +5,7 @@ Ctrl+C stops the app processes (Postgres/Redis/MinIO stay up).
 
   python scripts/dev_up.py
   python scripts/dev_up.py --skip-agents
-  python scripts/dev_up.py --legacy-agents   # 5× uvicorn instead of aopd
+  python scripts/dev_up.py --legacy-agents   # 5× uvicorn only (skip aopd)
   python scripts/dev_up.py --skip-web
 """
 
@@ -77,6 +77,23 @@ def _http_ok(url: str) -> bool:
         return False
 
 
+def _http_json(url: str) -> dict | None:
+    try:
+        import json
+        import urllib.request
+
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+
+
+def _aopd_has_children() -> bool:
+    snap = _http_json("http://127.0.0.1:7920/v1/status") or {}
+    kids = snap.get("children") or snap.get("agents") or []
+    return bool(kids)
+
+
 def _wait_http(url: str, name: str, timeout: float = 90.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -126,18 +143,38 @@ def _spawn(name: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> sub
 
 
 def _harness_profiles() -> list[tuple[str, int]]:
-    default = [
-        ("claude-code", 8011),
-        ("deepseek-harness", 8012),
-        ("pi", 8013),
-        ("openclaw", 8014),
-        ("hermes", 8015),
-    ]
+    try:
+        from agent_runtime.harness.profiles import as_port_tuples
+
+        default = as_port_tuples()
+    except ImportError:
+        default = [
+            ("claude-code", 8011),
+            ("deepseek-harness", 8012),
+            ("pi", 8013),
+            ("openclaw", 8014),
+            ("hermes", 8015),
+        ]
     raw = os.getenv("HARNESS_PROFILES", "").strip()
     if not raw:
         return default
     wanted = {p.strip() for p in raw.split(",") if p.strip()}
     return [(n, p) for n, p in default if n in wanted]
+
+
+def _aopd_harness_profiles() -> list[tuple[str, int]]:
+    try:
+        from agent_runtime.harness.profiles import as_aopd_plugin_port_tuples
+
+        return as_aopd_plugin_port_tuples()
+    except ImportError:
+        return [
+            ("claude-code", 8021),
+            ("deepseek-harness", 8022),
+            ("pi", 8023),
+            ("openclaw", 8024),
+            ("hermes", 8025),
+        ]
 
 
 def _register_agents(ports: list[int], env: dict[str, str]) -> None:
@@ -312,14 +349,61 @@ def _start_legacy_agents(
         _register_agents(up_ports, env)
 
 
+def _aopd_start_missing_harness() -> None:
+    """Ask a running supervisor to spawn children instead of competing uvicorn."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    for name, port in _aopd_harness_profiles():
+        if _http_ok(f"http://127.0.0.1:{port}/health"):
+            continue
+        req = urllib.request.Request(
+            f"http://127.0.0.1:7920/v1/agents/{name}/start",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                print(f"  aopd start {name} -> {resp.status}", flush=True)
+        except urllib.error.HTTPError as exc:
+            print(f"  aopd start {name} -> {exc.code} {exc.reason}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  aopd start {name} error: {exc}", flush=True)
+
+
+def _wait_harness_ports(*, seconds: float = 45.0) -> list[str]:
+    missing: list[str] = []
+    for name, port in _aopd_harness_profiles():
+        end = time.time() + seconds
+        while time.time() < end:
+            if _http_ok(f"http://127.0.0.1:{port}/health"):
+                print(f"  {name} :{port} OK", flush=True)
+                break
+            time.sleep(0.5)
+        else:
+            missing.append(f"{name}:{port}")
+            print(f"  {name} :{port} not healthy", flush=True)
+    return missing
+
+
 def _start_aop_node(
     procs: list[tuple[str, subprocess.Popen]], env: dict[str, str]
 ) -> bool:
-    """Start one aopd process. Returns False if caller should use legacy uvicorn."""
+    """Start one aopd process. Returns False if aopd could not start."""
     if _http_ok("http://127.0.0.1:7920/health"):
+        if not _aopd_has_children():
+            print(
+                "  aop-node :7920 is up but children=[] "
+                "(likely Windows service aop-node as LocalSystem with empty plugins). "
+                "Stop it as Administrator: sc stop aop-node",
+                flush=True,
+            )
+            return False
         missing = [
             f"{name}:{port}"
-            for name, port in _harness_profiles()
+            for name, port in _aopd_harness_profiles()
             if not _http_ok(f"http://127.0.0.1:{port}/health")
         ]
         if not missing:
@@ -327,16 +411,24 @@ def _start_aop_node(
             return True
         print(
             "  aop-node :7920 up but harness not listening "
-            f"({', '.join(missing)}) — will start uvicorn children",
+            f"({', '.join(missing)}) — asking aopd to start children",
             flush=True,
         )
-        return False
+        _aopd_start_missing_harness()
+        still = _wait_harness_ports(seconds=40)
+        if not still:
+            return True
+        print(
+            f"  aopd still missing {', '.join(still)} (supervisor is up; start children via :7920)",
+            flush=True,
+        )
+        return True
     node_root = ROOT / "apps" / "client" / "aop-node"
     if not (node_root / "Cargo.toml").is_file():
         return False
     aopd = _ensure_aopd()
     if aopd is None:
-        print("  aopd binary/cargo unavailable — falling back to legacy agents", flush=True)
+        print("  aopd binary/cargo unavailable", flush=True)
         return False
     cfg = _write_aop_node_config(env)
     aenv = env.copy()
@@ -365,15 +457,13 @@ def _start_aop_node(
     else:
         print("  aop-node :7920 not healthy (continuing)", flush=True)
         return True
-    for profile, port in _harness_profiles():
-        end = time.time() + 45
-        while time.time() < end:
-            if _http_ok(f"http://127.0.0.1:{port}/health"):
-                print(f"  {profile} :{port} OK", flush=True)
-                break
-            time.sleep(0.5)
-        else:
-            print(f"  {profile} :{port} not healthy yet (aopd still starting)", flush=True)
+    still = _wait_harness_ports(seconds=45)
+    if still:
+        print(f"  harness still starting: {', '.join(still)}", flush=True)
+        _aopd_start_missing_harness()
+        still = _wait_harness_ports(seconds=40)
+        if still:
+            print(f"  aopd children still missing: {', '.join(still)}", flush=True)
     return True
 
 
@@ -398,6 +488,9 @@ def main() -> int:
     env.setdefault("AUTH_REQUIRED", "false")
     env.setdefault("ORCHESTRATOR_URL", "http://127.0.0.1:8090")
     env.setdefault("NEXT_PUBLIC_API_BASE", "http://127.0.0.1:8080")
+    # proxy.golang.org often fails over IPv6 in CN; goproxy.cn matches local docs.
+    env.setdefault("GOPROXY", "https://goproxy.cn,direct")
+    env.setdefault("GOSUMDB", "sum.golang.google.cn")
     # Worker metrics default 9091 collides if orchestrator also binds it — leave default.
 
     if not args.no_infra:
@@ -463,8 +556,14 @@ def main() -> int:
             _die("outbox exited immediately — see .aop/logs/outbox.log")
 
         _info("gateway :8080")
+        gw_bin = ROOT / ".aop" / "bin" / ("gateway.exe" if os.name == "nt" else "gateway")
+        gw_alt = gw_cwd / ".aop" / "bin" / gw_bin.name
+        if not gw_bin.is_file() and gw_alt.is_file():
+            gw_bin.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(gw_alt, gw_bin)
+        gw_cmd = [str(gw_bin)] if gw_bin.is_file() else ["go", "run", "./cmd"]
         procs.append(
-            ("gateway", _spawn("gateway", ["go", "run", "./cmd"], cwd=gw_cwd, env=env))
+            ("gateway", _spawn("gateway", gw_cmd, cwd=gw_cwd, env=env))
         )
         _wait_http("http://127.0.0.1:8080/health", "gateway", timeout=120)
 
@@ -487,9 +586,11 @@ def main() -> int:
                 "yes",
                 "on",
             }
-            if legacy or not _start_aop_node(procs, env):
-                if not legacy:
-                    _info("falling back to legacy harness uvicorn")
+            if legacy:
+                _start_legacy_agents(procs, env)
+            else:
+                if not _start_aop_node(procs, env):
+                    _die("aopd failed to start — see .aop/logs/aopd.log (use --legacy-agents only to skip)")
                 _start_legacy_agents(procs, env)
 
         print("", flush=True)

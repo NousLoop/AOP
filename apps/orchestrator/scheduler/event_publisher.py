@@ -23,7 +23,7 @@ class EventPublisher:
         self.evaluations = evaluations or EvaluationService()
 
     def publish_node_enqueued(
-        self, task_id: str, node_key: str, skill: str
+        self, task_id: str, node_key: str, agent_key: str
     ) -> str:
         """Publish node enqueued event.
         
@@ -35,7 +35,7 @@ class EventPublisher:
             {
                 "task_id": task_id,
                 "node_key": node_key,
-                "skill": skill,
+                "agent_key": agent_key,
             },
         )
 

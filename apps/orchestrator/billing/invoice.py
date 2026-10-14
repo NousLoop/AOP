@@ -72,21 +72,21 @@ def build_invoice_from_usage(
             }
         )
 
-    for row in (usage.get("agent_runs") or {}).get("by_skill") or []:
+    for row in (usage.get("agent_runs") or {}).get("by_agent_key") or []:
         qty = int(row.get("runs") or 0)
         if qty <= 0:
             continue
-        skill = str(row.get("skill") or "unknown")
+        agent_key = str(row.get("agent_key") or "unknown")
         unit = float(row.get("unit_price_usd") or 0)
         amt = float(row.get("estimated_cost_usd") or 0)
         lines.append(
             {
-                "id": f"skill:{skill}",
-                "description": f"Agent runs · {skill} × {qty}",
+                "id": f"agent:{agent_key}",
+                "description": f"Agent runs · {agent_key} × {qty}",
                 "quantity": qty,
                 "unit_amount_usd": unit,
                 "amount_usd": round(amt, 6),
-                "skill": skill,
+                "agent_key": agent_key,
             }
         )
 

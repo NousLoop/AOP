@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from agent_lifecycle import AgentLifecycleService
@@ -70,3 +72,24 @@ def test_policy_allowed_denied_agents():
     assert pol.allows_agent("a")[0] is True
     assert pol.allows_agent("b")[0] is False
     assert pol.allows_agent("c")[0] is False
+
+
+def test_postgres_lifecycle_survives_new_service():
+    pytest.importorskip("psycopg")
+    from tests.conftest import _pg_available
+
+    if not _pg_available():
+        pytest.skip("PostgreSQL not reachable")
+    from agent_lifecycle import PostgresAgentLifecycleService
+
+    aid = f"life-{uuid.uuid4().hex[:12]}"
+    a = PostgresAgentLifecycleService()
+    a.ping()
+    a.register(aid, version="pg")
+    a.mark_ready(aid)
+    b = PostgresAgentLifecycleService()
+    row = b.get(aid)
+    assert row is not None
+    assert row["state"] == "READY"
+    assert row["version"] == "pg"
+

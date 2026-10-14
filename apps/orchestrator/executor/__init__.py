@@ -50,7 +50,26 @@ class ExecutionResult:
     @property
     def ok(self) -> bool:
         status = getattr(self.task.status, "value", self.task.status)
-        return str(status or "").lower() == "completed"
+        if str(status or "").lower() != "completed":
+            return False
+        try:
+            from agent_runtime.harness.runners._cli_common import harness_output_error
+        except ImportError:
+            harness_output_error = lambda *a: None  # noqa: E731
+        extra = None
+        if isinstance(self.data, dict):
+            extra = " ".join(
+                str(self.data.get(k) or "")
+                for k in ("error", "stderr", "message", "status", "ok")
+            )
+            if self.data.get("ok") is False:
+                extra = f"{extra} ok=false"
+            if self.data.get("stub") is True or (
+                self.data.get("hosted") is True and not self.data.get("model_invoked")
+            ):
+                extra = f"{extra} hosted stub"
+        task_err = getattr(self.task, "error", None)
+        return harness_output_error(self.text, extra, task_err) is None
 
 
 class A2AExecutor:

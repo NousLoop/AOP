@@ -28,7 +28,7 @@ from execution import (
     RecoveryScheduler,
     ExecutionConfig,
 )
-from agent_lifecycle import AgentLifecycleService
+from agent_lifecycle import AgentLifecycleService, PostgresAgentLifecycleService
 from scheduling import SchedulingService
 
 # Phase 36.8: Recovery and DR integration
@@ -57,7 +57,12 @@ workflows = WorkflowService()
 # Phase 4: Postgres Execution Store by default (EXECUTION_STORE=memory for tests).
 _exec_cfg = ExecutionConfig.from_env()
 execution = build_execution_service(_exec_cfg)
-agent_lifecycle = AgentLifecycleService(event_bus=execution.events)
+tasks.execution = execution
+if _exec_cfg.store == "postgres" and not os.getenv("PYTEST_CURRENT_TEST"):
+    agent_lifecycle = PostgresAgentLifecycleService(event_bus=execution.events)
+    agent_lifecycle.ping()
+else:
+    agent_lifecycle = AgentLifecycleService(event_bus=execution.events)
 marketplace = MarketplaceService(event_bus=execution.events, lifecycle=agent_lifecycle)
 streams = StreamClient()
 execution.events.on_emit(

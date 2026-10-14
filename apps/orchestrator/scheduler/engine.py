@@ -32,7 +32,7 @@ class SchedulingEngine:
             self.job_queue.enqueue(**job)
             enqueued.append(job["node_key"])
             self.event_publisher.publish_node_enqueued(
-                task_id, job["node_key"], job["skill"]
+                task_id, job["node_key"], job["agent_key"]
             )
         return enqueued
 
@@ -125,6 +125,11 @@ class SchedulingEngine:
         enqueued = self.enqueue_jobs(result.get("ready_jobs") or [], task_id=task_id)
         result["enqueued_nodes"] = enqueued
         return result
+
+    def requeue_incomplete(self, task_id: str) -> dict[str, Any]:
+        jobs = self.scheduler.requeue_incomplete(task_id)
+        enqueued = self.enqueue_jobs(jobs, task_id=task_id)
+        return {"task_id": task_id, "jobs": jobs, "enqueued_nodes": enqueued}
 
     def get_task(self, task_id: str, *, tenant_id: str | None = None) -> dict[str, Any] | None:
         return self.scheduler.get_task(task_id, tenant_id=tenant_id)

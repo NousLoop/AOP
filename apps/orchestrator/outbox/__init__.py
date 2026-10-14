@@ -111,7 +111,7 @@ class OutboxProcessor:
                 task_id=payload["task_id"],
                 node_id=payload["node_id"],
                 node_key=payload["node_key"],
-                skill=payload["skill"],
+                agent_key=payload["agent_key"],
                 attempt=payload.get("attempt", 1),
                 priority=payload.get("priority", 100),
                 exclude_agent_ids=payload.get("exclude_agent_ids"),

@@ -31,6 +31,16 @@ def test_factory_defaults_to_memory_when_env_memory():
     assert isinstance(svc.store, ExecutionRecordStore)
 
 
+def test_factory_postgres_unavailable_raises(monkeypatch):
+    class Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("execution.factory.PostgresExecutionRecordStore", Boom)
+    with pytest.raises(RuntimeError, match="Postgres execution store unavailable"):
+        build_execution_service(ExecutionConfig(store="postgres"), force_memory=False)
+
+
 def test_lease_ownership_contention():
     svc = ExecutionService(
         retry_policy=RetryPolicy(max_retries=3),
@@ -59,6 +69,17 @@ def test_lease_steal_after_expiry():
     time.sleep(0.01)
     tok2 = svc.store.try_acquire_ownership("lease-2", owner_id="w2", lease_seconds=30)
     assert tok2 and tok2 != tok1
+
+
+def test_recover_pending_starts():
+    svc = ExecutionService(
+        retry_policy=RetryPolicy(max_retries=3),
+        config=ExecutionConfig(store="memory", outbox_enabled=False, lease_duration_s=30),
+    )
+    svc.create(task_id="r-pending", root_task_id="r-pending")
+    out = svc.recover("r-pending", stale_after_s=0, owner_id="rec-p")
+    assert out["action"] == "start"
+    assert svc.get("r-pending").state == "RUNNING"
 
 
 def test_recover_uses_lease_owner():

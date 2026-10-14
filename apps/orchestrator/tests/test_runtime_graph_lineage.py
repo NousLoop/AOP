@@ -158,29 +158,29 @@ def test_collaboration_from_plan_builds_mid_task_hops(monkeypatch):
         "id": "task-root",
         "plan_json": {
             "nodes": [
-                {"id": "search", "skill": "web-search"},
-                {"id": "rag", "skill": "knowledge-search"},
-                {"id": "report", "skill": "report-generation", "depends_on": ["search", "rag"]},
+                {"id": "hop-a", "agent_key": "claude-code"},
+                {"id": "hop-b", "agent_key": "deepseek-harness"},
+                {"id": "hop-d", "agent_key": "hermes", "depends_on": ["hop-a", "hop-b"]},
             ]
         },
         "nodes": [
-            {"id": "search", "skill": "web-search", "status": "success",
+            {"id": "hop-a", "agent_key": "claude-code", "status": "success",
              "agent_id": "3853d2a2-aaaa-bbbb-cccc-000000000001",
              "handoff": {
-                 "from": "search", "to": ["report"],
+                 "from": "hop-a", "to": ["hop-d"],
                  "reason": "search done; unlock report",
                  "artifact_ids": ["s3://b/t/search/output.md"],
                  "confidence": 0.9,
              }},
-            {"id": "rag", "skill": "knowledge-search", "status": "success",
+            {"id": "hop-b", "agent_key": "deepseek-harness", "status": "success",
              "agent_id": "baeefa35-aaaa-bbbb-cccc-000000000002",
              "handoff": {
-                 "from": "rag", "to": ["report"],
+                 "from": "hop-b", "to": ["hop-d"],
                  "reason": "rag done; unlock report",
                  "artifact_ids": ["s3://b/t/rag/output.md"],
                  "confidence": 0.85,
              }},
-            {"id": "report", "skill": "report-generation", "status": "success",
+            {"id": "hop-d", "agent_key": "hermes", "status": "success",
              "agent_id": "85cc6a4d-aaaa-bbbb-cccc-000000000003"},
         ],
     }
@@ -196,20 +196,20 @@ def test_collaboration_from_plan_builds_mid_task_hops(monkeypatch):
         assert link["source"]
         assert link["target"]
     # handoff.reason from upstream search node surfaces on report edges
-    report_links = [l for l in g["links"] if "report" in str(l.get("task_id"))]
+    hop_d_links = [l for l in g["links"] if "hop-d" in str(l.get("task_id"))]
     assert any(
-        (l.get("reason") or "").startswith("search done") for l in report_links
+        (l.get("reason") or "").startswith("search done") for l in hop_d_links
     )
     # task nodes carry handoff + artifact_ids for console (中间传递 / 产物)
-    search_task = next(n for n in tasks if n.get("plan_node_id") == "search")
-    assert search_task.get("handoff_reason", "").startswith("search done")
+    hop_a_task = next(n for n in tasks if n.get("plan_node_id") == "hop-a")
+    assert hop_a_task.get("handoff_reason", "").startswith("search done")
     assert any(
-        str(a).endswith("output.md") for a in (search_task.get("artifact_ids") or [])
+        str(a).endswith("output.md") for a in (hop_a_task.get("artifact_ids") or [])
     )
-    # inbound report links expose upstream-passed artifact_ids (not mid outputs)
+    # inbound hop-d links expose upstream-passed artifact_ids (not mid outputs)
     assert any(
         (l.get("artifact_ids") or []) and "search/output.md" in str(l.get("artifact_ids"))
-        for l in report_links
+        for l in hop_d_links
     )
     # orchestrator → leaf fan-out must NOT pretend to pass the node's own outputs
     root_links = [

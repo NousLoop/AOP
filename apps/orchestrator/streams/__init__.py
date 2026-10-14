@@ -33,8 +33,13 @@ def _utc_now() -> str:
 
 class StreamClient:
     def __init__(self, redis_url: str | None = None):
-        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.r = redis.Redis.from_url(self.redis_url, decode_responses=True)
+        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        self.r = redis.Redis.from_url(
+            self.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=1.0,
+            socket_timeout=2.0,
+        )
         self.r.ping()
         self.ensure_groups()
 
@@ -56,7 +61,7 @@ class StreamClient:
         task_id: str,
         node_id: str,
         node_key: str,
-        skill: str,
+        agent_key: str,
         attempt: int = 1,
         priority: int = 100,
         exclude_agent_ids: list[str] | None = None,
@@ -70,7 +75,7 @@ class StreamClient:
             "task_id": task_id,
             "node_id": node_id,
             "node_key": node_key,
-            "skill": skill,
+            "agent_key": agent_key,
             "attempt": str(attempt),
             "priority": str(priority),
             "exclude_agent_ids": ",".join(exclude_agent_ids or []),

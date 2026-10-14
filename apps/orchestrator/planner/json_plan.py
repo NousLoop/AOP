@@ -10,6 +10,26 @@ from .dag import PlanNode
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
+# Plan hops are agent_keys. LLM leftovers from the old specialty catalog are dropped.
+_LEGACY_SPECIALTY_SKILLS = frozenset(
+    {
+        "web-search",
+        "web-research",
+        "research-summarize",
+        "knowledge-search",
+        "business-analysis",
+        "report-generation",
+        "ppt-generation",
+        "text-to-image",
+        "text-to-video",
+        "code-execution",
+        "browser-automation",
+        "code-assist",
+        "image-analysis",
+        "document-analysis",
+    }
+)
+
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
     """Parse a JSON object from raw model output (fences / leading junk OK)."""
@@ -41,7 +61,7 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
 def nodes_from_payload(
     data: dict[str, Any],
     *,
-    available_skills: set[str],
+    available_agent_keys: set[str],
     hitl: set[str],
     max_nodes: int = 8,
 ) -> list[PlanNode]:
@@ -58,12 +78,13 @@ def nodes_from_payload(
             break
         if not isinstance(item, dict):
             continue
-        skill = str(item.get("skill") or "").strip()
-        if skill not in available_skills:
-            # allow alias: skill_id with spaces
-            alt = skill.replace(" ", "-")
-            if alt in available_skills:
-                skill = alt
+        agent_key = str(item.get("agent_key") or "").strip()
+        if agent_key in _LEGACY_SPECIALTY_SKILLS:
+            continue
+        if agent_key not in available_agent_keys:
+            alt = agent_key.replace(" ", "-")
+            if alt in available_agent_keys:
+                agent_key = alt
             else:
                 continue
         node_id = str(item.get("id") or f"step{i + 1}").strip()
@@ -79,7 +100,7 @@ def nodes_from_payload(
             deps_raw = []
         deps = [str(d).strip() for d in deps_raw if str(d).strip()]
 
-        requires = bool(item.get("requires_approval")) or skill in hitl
+        requires = bool(item.get("requires_approval")) or agent_key in hitl
         mode_raw = item.get("approval_mode")
         mode = str(mode_raw).strip().lower() if isinstance(mode_raw, str) and mode_raw.strip() else None
         if requires and not mode:
@@ -89,7 +110,7 @@ def nodes_from_payload(
         built.append(
             PlanNode(
                 id=node_id,
-                skill=skill,
+                agent_key=agent_key,
                 depends_on=deps,
                 requires_approval=requires or (mode in {"system", "both"}),
                 approval_mode=mode,

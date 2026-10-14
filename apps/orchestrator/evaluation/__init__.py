@@ -40,7 +40,7 @@ class EvaluationService:
             tid = tenant_id or task["tenant_id"] or DEFAULT_TENANT_ID
             nodes = conn.execute(
                 """
-                SELECT node_key, skill, status, error_message, output_json,
+                SELECT node_key, agent_key, status, error_message, output_json,
                        started_at, finished_at
                 FROM task_nodes WHERE task_id = %s::uuid
                 """,

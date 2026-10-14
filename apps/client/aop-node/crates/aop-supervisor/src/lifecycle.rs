@@ -79,7 +79,7 @@ impl Supervisor {
                 match os.register_with_retry(8).await {
                     Ok(_) => *self.registered.write().await = true,
                     Err(e) => {
-                        warn!(error = %e, "continuing without successful node register");
+                        warn!(error = %e, "continuing without successful node heartbeat");
                     }
                 }
             }

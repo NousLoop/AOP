@@ -252,7 +252,10 @@ def test_retry_recovery_failure_parallel_edges():
         },
     ]
     g = project_visual_graph(task_id="r", events=events)
-    assert any(n["type"] == "error" for n in g["nodes"])
+    b = next(n for n in g["nodes"] if n.get("agent_id") == "B")
+    assert b["status"] == "failed"
+    assert (b.get("metadata") or {}).get("error") == "boom"
+    assert not any(n["type"] == "error" for n in g["nodes"])
     assert any(e["type"] == "retry" or "retry" in str(e.get("metadata")) for e in g["edges"]) or any(
         n["agent_id"] == "A" and n["status"] in {"retrying", "running", "completed"}
         for n in g["nodes"]
@@ -567,3 +570,181 @@ def test_task_row_preserves_waiting_for_agent():
         task_row={"id": "t-sys", "status": "waiting_for_user"},
     )
     assert human["status"] == "waiting_for_user"
+
+
+def test_failed_hop_does_not_leave_agent_completed():
+    """Collab defaulted agents to completed; DAG hop failure must win."""
+    aid = "2e84672f-fd8a-4e75-bf25-6d223518b9c3"
+    g = project_visual_graph(
+        task_id="t-fail",
+        events=[
+            {
+                "event_type": "task.created",
+                "event_id": "e1",
+                "task_id": "t-fail",
+                "root_task_id": "t-fail",
+                "payload": {"sequence": 1},
+            },
+            {
+                "event_type": "task.failed",
+                "event_id": "e2",
+                "task_id": "t-fail",
+                "root_task_id": "t-fail",
+                "payload": {"sequence": 2, "error": "余额不足"},
+            },
+        ],
+        collaboration_graph={
+            "nodes": [
+                {"id": "orchestrator", "type": "agent", "label": "orchestrator"},
+                {"id": aid, "type": "agent", "label": "Claude Code", "agent_key": "claude-code"},
+            ],
+            "links": [
+                {
+                    "id": "d1",
+                    "source": "orchestrator",
+                    "target": aid,
+                    "status": "failed",
+                }
+            ],
+        },
+        task_row={
+            "id": "t-fail",
+            "status": "failed",
+            "title": "Research Vidu S2",
+            "nodes": [
+                {
+                    "id": "run",
+                    "agent_id": aid,
+                    "agent_key": "claude-code",
+                    "status": "failed",
+                    "error_message": "余额不足",
+                }
+            ],
+        },
+    )
+    claude = next(n for n in g["nodes"] if n.get("agent_id") == aid)
+    assert claude["status"] == "failed"
+    assert (claude.get("metadata") or {}).get("error") == "余额不足"
+    assert not any(n["type"] == "error" for n in g["nodes"])
+
+
+def test_completed_task_does_not_keep_balance_error_on_task():
+    aid = "claude"
+    hosted = "hosted"
+    g = project_visual_graph(
+        task_id="t-ok",
+        events=[
+            {
+                "event_type": "task.failed",
+                "event_id": "e1",
+                "task_id": "t-ok",
+                "root_task_id": "t-ok",
+                "payload": {"sequence": 1, "error": "余额不足"},
+            },
+            {
+                "event_type": "task.completed",
+                "event_id": "e2",
+                "task_id": "t-ok",
+                "root_task_id": "t-ok",
+                "payload": {"sequence": 2},
+            },
+        ],
+        collaboration_graph={
+            "nodes": [
+                {"id": aid, "type": "agent", "label": "Claude Code", "agent_key": "claude-code"},
+                {"id": hosted, "type": "agent", "label": "Hermes", "agent_key": "hermes"},
+            ],
+            "links": [],
+        },
+        task_row={
+            "id": "t-ok",
+            "status": "completed",
+            "title": "use all agents",
+            "nodes": [
+                {
+                    "id": "claude_code",
+                    "agent_id": aid,
+                    "agent_key": "claude-code",
+                    "status": "failed",
+                    "error_message": "余额不足",
+                },
+                {
+                    "id": "aop_hosted",
+                    "agent_id": hosted,
+                    "agent_key": "hermes",
+                    "status": "success",
+                    "output_excerpt": "UI2V is a UI-to-video research note with sources.",
+                },
+            ],
+        },
+    )
+    task = next(n for n in g["nodes"] if n["type"] == "task")
+    assert task["status"] == "completed"
+    assert not (task.get("metadata") or {}).get("error")
+    claude = next(n for n in g["nodes"] if n.get("agent_id") == aid)
+    assert claude["status"] == "failed"
+    hosted_n = next(n for n in g["nodes"] if n.get("agent_id") == hosted)
+    assert hosted_n["status"] == "completed"
+    assert not (hosted_n.get("metadata") or {}).get("error")
+
+
+def test_hosted_stub_does_not_complete_task():
+    hosted = "hosted"
+    g = project_visual_graph(
+        task_id="t-stub",
+        events=[],
+        collaboration_graph={
+            "nodes": [
+                {"id": hosted, "type": "agent", "label": "Hermes", "agent_key": "hermes"},
+            ],
+            "links": [],
+        },
+        task_row={
+            "id": "t-stub",
+            "status": "completed",
+            "nodes": [
+                {
+                    "id": "aop_hosted",
+                    "agent_id": hosted,
+                    "agent_key": "hermes",
+                    "status": "success",
+                    "output_excerpt": "# AOP hosted result\n\nCompleted by the platform-hosted runner (no external CLI).",
+                }
+            ],
+        },
+    )
+    assert g["status"] == "failed"
+    task = next(n for n in g["nodes"] if n["type"] == "task")
+    assert task["status"] == "failed"
+    hosted_n = next(n for n in g["nodes"] if n.get("agent_id") == hosted)
+    assert hosted_n["status"] == "failed"
+    assert "hosted stub" in str((hosted_n.get("metadata") or {}).get("error"))
+
+
+def test_success_hop_with_cli_failure_text_is_failed():
+    g = project_visual_graph(
+        task_id="t-h",
+        events=[],
+        collaboration_graph={
+            "nodes": [
+                {"id": "h1", "type": "agent", "label": "Hermes", "agent_key": "hermes"},
+            ],
+            "links": [],
+        },
+        task_row={
+            "id": "t-h",
+            "status": "completed",
+            "nodes": [
+                {
+                    "id": "hermes",
+                    "agent_id": "h1",
+                    "agent_key": "hermes",
+                    "status": "success",
+                    "output_excerpt": "API call failed after 3 retries: Request timed out.",
+                }
+            ],
+        },
+    )
+    hermes = next(n for n in g["nodes"] if n.get("agent_id") == "h1")
+    assert hermes["status"] == "failed"
+    assert "API call failed" in str((hermes.get("metadata") or {}).get("error"))

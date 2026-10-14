@@ -34,17 +34,16 @@ function isSessionToken(token: string): boolean {
 
 export type TaskNode = {
   id: string;
-  /** Plan field: today this is agent_key (no skill split). */
-  skill: string;
+  agent_key: string;
   status: string;
   agent_id?: string | null;
-  /** Resolved harness / virtual agent key (claude-code, deepseek-harness, pi, …). */
-  agent_key?: string | null;
   agent_name?: string | null;
   agent_endpoint?: string | null;
   a2a_task_id?: string | null;
   attempt?: number;
   error_message?: string | null;
+  /** Truncated node output; used to detect provider 402 on wrongly-completed hops. */
+  output_excerpt?: string | null;
   handoff?: Record<string, unknown> | null;
   hitl?: {
     mode?: string;
@@ -63,10 +62,9 @@ export type TaskNode = {
 export type TaskPlan = {
   title?: string;
   goal?: string;
-  nodes: Array<{
+    nodes: Array<{
     id: string;
-    /** Agent key routed by planner (legacy name: skill). */
-    skill: string;
+    agent_key?: string;
     depends_on?: string[];
     approval_mode?: string | null;
     approver_agent?: string | null;
@@ -82,6 +80,8 @@ export type TaskSummary = {
   created_at?: string;
   updated_at?: string;
   finished_at?: string;
+  /** OS ExecutionRecord.state when the DAG row is mirrored. */
+  os_state?: string;
 };
 
 export type TaskDetail = {
@@ -90,6 +90,7 @@ export type TaskDetail = {
   status: string;
   progress?: number;
   input_json?: { type?: string; content?: string };
+  os_state?: string;
   plan_json?: TaskPlan;
   result_json?: {
     summary?: string;
@@ -116,6 +117,13 @@ export type TaskEvent = {
   ts?: string;
 };
 
+export type AgentIdentity =
+  | "assistant"
+  | "manager"
+  | "employee"
+  | "student"
+  | "support";
+
 export type Agent = {
   agent_id: string;
   agent_key: string;
@@ -125,6 +133,10 @@ export type Agent = {
   endpoint?: string;
   skills: string[];
   priority?: number;
+  identity?: AgentIdentity | string;
+  owner_user_id?: string;
+  owner_email?: string;
+  owner_display_name?: string;
 };
 
 export type ArtifactItem = {
@@ -375,12 +387,23 @@ export function getOverviewStats() {
   return request<OverviewStats>("/v1/stats/overview");
 }
 
+export function isWorkAgentKey(agentKey?: string | null) {
+  const k = (agentKey || "").trim().toLowerCase();
+  if (!k) return false;
+  return !k.startsWith("aop-node") && !k.startsWith("node-local");
+}
+
 export function listAgents(params?: { skill?: string; status?: string }) {
   const q = new URLSearchParams();
   if (params?.skill) q.set("skill", params.skill);
   if (params?.status) q.set("status", params.status);
   const qs = q.toString();
-  return request<{ agents: Agent[] }>(`/v1/agents${qs ? `?${qs}` : ""}`);
+  return request<{ agents: Agent[] }>(`/v1/agents${qs ? `?${qs}` : ""}`).then(
+    (data) => ({
+      ...data,
+      agents: (data.agents || []).filter((a) => isWorkAgentKey(a.agent_key)),
+    }),
+  );
 }
 
 export function registerAgent(endpoint: string) {
@@ -394,53 +417,19 @@ export function getAgent(agentId: string) {
   return request<Agent>(`/v1/agents/${agentId}`);
 }
 
-export function healthCheckAgent(agentId: string) {
-  return request<Record<string, unknown>>(`/v1/agents/${agentId}/health`, {
-    method: "POST",
-  });
-}
-
-export type Workflow = {
-  workflow_id: string;
-  workflow_key: string;
-  name: string;
-  description?: string;
-  status: string;
-  version?: string;
-  dag?: TaskPlan;
-};
-
-export function listWorkflows(status?: string) {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-  return request<{ workflows: Workflow[] }>(`/v1/workflows${qs}`);
-}
-
-export function createWorkflow(body: {
-  name: string;
-  description?: string;
-  workflow_key?: string;
-  version?: string;
-  publish?: boolean;
-  dag: TaskPlan;
-}) {
-  return request<Workflow>("/v1/workflows", {
-    method: "POST",
+export function updateAgentMeta(
+  agentId: string,
+  body: { identity?: string; owner_user_id?: string },
+) {
+  return request<Agent>(`/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
     body: JSON.stringify(body),
   });
 }
 
-export function runWorkflow(workflowId: string, content: string, title?: string) {
-  return request<{
-    task_id: string;
-    status: string;
-    plan?: TaskPlan;
-    workflow_id?: string;
-  }>(`/v1/workflows/${workflowId}/run`, {
+export function healthCheckAgent(agentId: string) {
+  return request<Record<string, unknown>>(`/v1/agents/${agentId}/health`, {
     method: "POST",
-    body: JSON.stringify({
-      input: { type: "text", content },
-      title,
-    }),
   });
 }
 
@@ -870,7 +859,7 @@ export function previewRouter(skill: string) {
 }
 
 export type BillingSkillRow = {
-  skill: string;
+  agent_key: string;
   runs: number;
   success: number;
   failed: number;
@@ -899,7 +888,7 @@ export type BillingUsage = {
   task_cost_usd: number;
   agent_runs: {
     total: number;
-    by_skill: BillingSkillRow[];
+    by_agent_key: BillingSkillRow[];
     estimated_cost_usd: number;
     stored_cost_usd: number;
   };

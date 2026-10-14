@@ -48,9 +48,109 @@ def test_smart_off_uses_priority_only():
     assert breakdown["total"] == breakdown["priority"]
 
 
+def test_rank_uses_exact_agent_key_not_skill_index():
+    router = AgentRouter(database_url="postgresql://invalid/invalid")
+    hosted = {
+        "agent_id": "id-hosted",
+        "agent_key": "hermes",
+        "name": "Hermes",
+        "status": "online",
+        "endpoint": "http://127.0.0.1:8015/",
+        "priority": 100,
+        "skills": ["hermes"],
+    }
+    claude = {
+        "agent_id": "id-claude",
+        "agent_key": "claude-code",
+        "name": "Claude Code",
+        "status": "online",
+        "endpoint": "http://127.0.0.1:8011/",
+        "priority": 1,
+        "skills": [],
+    }
+    with patch.object(router, "_get_agent", side_effect=lambda s: hosted if s == "hermes" else None):
+        with patch.object(router, "_candidates_from_redis", return_value=[claude]):
+            with patch.object(router, "_load_metrics", return_value={}):
+                ranked = router.rank("hermes")
+    assert len(ranked) == 1
+    assert ranked[0].agent_key == "hermes"
+    assert ranked[0].source == "agent_key"
+
+
+def test_rank_exact_key_not_mixed_with_skill_index():
+    router = AgentRouter(database_url="postgresql://invalid/invalid")
+    hosted = {
+        "agent_id": "id-hosted",
+        "agent_key": "hermes",
+        "name": "Hermes",
+        "status": "online",
+        "endpoint": "http://127.0.0.1:8015/",
+        "priority": 100,
+        "skills": ["hermes"],
+    }
+    claude = {
+        "agent_id": "id-claude",
+        "agent_key": "claude-code",
+        "name": "Claude Code",
+        "status": "online",
+        "endpoint": "http://127.0.0.1:8011/",
+        "priority": 1,
+        "skills": ["hermes"],
+    }
+    with patch.object(router, "_get_agent", return_value=None):
+        with patch.object(router, "_candidates_from_redis", return_value=[claude, hosted]):
+            with patch.object(router, "_load_metrics", return_value={}):
+                ranked = router.rank("hermes")
+    assert [a.agent_key for a in ranked] == ["hermes"]
+
+
+def test_rank_named_agent_offline_does_not_substitute():
+    router = AgentRouter(database_url="postgresql://invalid/invalid")
+    hosted = {
+        "agent_id": "id-hosted",
+        "agent_key": "hermes",
+        "name": "Hermes",
+        "status": "offline",
+        "endpoint": "http://127.0.0.1:8015/",
+        "priority": 100,
+        "skills": ["hermes"],
+    }
+    claude = {
+        "agent_id": "id-claude",
+        "agent_key": "claude-code",
+        "name": "Claude Code",
+        "status": "online",
+        "endpoint": "http://127.0.0.1:8011/",
+        "priority": 1,
+        "skills": ["hermes"],
+    }
+    with patch.object(router, "_get_agent", return_value=hosted):
+        with patch.object(router, "_candidates_from_redis", return_value=[claude]):
+            with patch.object(router, "_load_metrics", return_value={}):
+                assert router.rank("hermes") == []
+
+
+def test_rank_skips_supervisor_keys():
+    router = AgentRouter(database_url="postgresql://invalid/invalid")
+    node = {
+        "agent_id": "id-node",
+        "agent_key": "node-local-1",
+        "name": "aopd",
+        "status": "online",
+        "endpoint": "http://127.0.0.1:7920/",
+        "priority": 1,
+        "skills": [],
+    }
+    with patch.object(router, "_get_agent", return_value=node):
+        with patch.object(router, "_candidates_from_redis", return_value=[node]):
+            with patch.object(router, "_candidates_from_pg", return_value=[node]):
+                with patch.object(router, "_load_metrics", return_value={}):
+                    assert router.rank("node-local-1") == []
+
+
 def test_hitl_skills_parsing():
-    with patch.dict(os.environ, {"HITL_SKILLS": "report-generation,text-to-image"}):
-        assert hitl_skills() == {"report-generation", "text-to-image"}
+    with patch.dict(os.environ, {"HITL_SKILLS": "hermes,claude-code"}):
+        assert hitl_skills() == {"hermes", "claude-code"}
     with patch.dict(os.environ, {"HITL_SKILLS": "off"}):
         assert hitl_skills() == set()
 

@@ -33,9 +33,25 @@ def list_tasks(
     request: Request, status: str | None = None, limit: int = 50
 ) -> dict[str, Any]:
     ten = tenant_from_request(request)
-    return {
-        "tasks": ctx.tasks.list(status=status, limit=limit, tenant_id=ten.tenant_id),
-    }
+    tasks = ctx.tasks.list(status=status, limit=limit, tenant_id=ten.tenant_id)
+    ids = [str(t.get("task_id") or t.get("id") or "") for t in tasks]
+    ids = [i for i in ids if i]
+    states: dict[str, str] = {}
+    try:
+        fn = getattr(ctx.execution, "states_for_tasks", None)
+        if callable(fn):
+            states = fn(ids) or {}
+    except Exception:  # noqa: BLE001
+        states = {}
+    out: list[dict[str, Any]] = []
+    for t in tasks:
+        row = dict(t)
+        tid = str(row.get("task_id") or row.get("id") or "")
+        os_state = states.get(tid)
+        if os_state:
+            row["os_state"] = os_state
+        out.append(row)
+    return {"tasks": out}
 
 
 @router.post("/v1/tasks", status_code=201)
@@ -88,7 +104,21 @@ def get_task(
         forbid_cross_tenant(request, row.get("tenant_id"))
     try:
         row = dict(row)
-        row["execution"] = ctx.execution.get_execution_view(task_id)
+        view = ctx.execution.get_execution_view(task_id)
+        if not (view or {}).get("execute"):
+            from execution.dag_bridge import sync_from_dag
+
+            sync_from_dag(
+                ctx.execution,
+                task_id,
+                row.get("status"),
+                tenant_id=row.get("tenant_id"),
+            )
+            view = ctx.execution.get_execution_view(task_id)
+        row["execution"] = view
+        state = ((view or {}).get("execute") or {}).get("state")
+        if state:
+            row["os_state"] = state
     except Exception:  # noqa: BLE001
         pass
     return row
@@ -105,4 +135,16 @@ def get_task_execution(task_id: str, request: Request) -> dict[str, Any]:
                 status_code=404,
                 detail={"code": "not_found", "message": "task not found"},
             )
+        try:
+            from execution.dag_bridge import sync_from_dag
+
+            sync_from_dag(
+                ctx.execution,
+                task_id,
+                row.get("status"),
+                tenant_id=row.get("tenant_id"),
+            )
+            view = ctx.execution.get_execution_view(task_id)
+        except Exception:  # noqa: BLE001
+            pass
     return view

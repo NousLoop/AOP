@@ -6,7 +6,7 @@ prose; the collaboration graph can show ``reason`` on edges.
 
 Schema (stable keys):
   from, to, reason, artifact_ids, confidence
-Optional: skill, agent_id, node_key
+Optional: agent_key, agent_id, node_key
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def build_handoff(
     reason: str | None = None,
     artifact_ids: list[str] | None = None,
     confidence: float | None = None,
-    skill: str | None = None,
+    agent_key: str | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a handoff dict suitable for persistence in ``output_json``."""
@@ -39,7 +39,7 @@ def build_handoff(
     to_list = [str(t) for t in (to_nodes or []) if t]
     default_reason = (
         f"Node {from_node} completed"
-        + (f" ({skill})" if skill else "")
+        + (f" ({agent_key})" if agent_key else "")
         + (f"; hand off to {', '.join(to_list)}" if to_list else "")
     )
     return {
@@ -49,7 +49,7 @@ def build_handoff(
         "reason": (reason or default_reason).strip(),
         "artifact_ids": arts,
         "confidence": conf,
-        "skill": skill,
+        "agent_key": agent_key,
         "agent_id": agent_id,
         "node_key": str(from_node),
     }
@@ -84,7 +84,7 @@ def parse_handoff(raw: Any) -> dict[str, Any] | None:
         "reason": str(raw.get("reason") or "").strip(),
         "artifact_ids": [str(a) for a in arts if a],
         "confidence": max(0.0, min(1.0, conf_f)),
-        "skill": raw.get("skill"),
+        "agent_key": raw.get("agent_key"),
         "agent_id": raw.get("agent_id"),
         "node_key": str(raw.get("node_key") or src),
     }
@@ -202,7 +202,7 @@ def prune_upstream_slices(
     """Reducer-style prune: keep dep-scoped slices, shrink bodies to fit budget.
 
     Each slice dict expects:
-      node_key, skill, reason, confidence, artifact_ids, body, human (optional)
+      node_key, agent_key, reason, confidence, artifact_ids, body, human (optional)
 
     Prefer high-confidence handoffs; when body would exceed allocation, fall back
     to a short preview + artifact URI list (overwrite-safe summary, not full transcript).

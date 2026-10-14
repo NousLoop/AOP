@@ -11,7 +11,8 @@ import {
   type MemoryEntry,
   type TaskEvaluation,
 } from "@/lib/api";
-import { agentDisplayName } from "@/components/tasks/TaskFlowDag";
+import { agentDisplayName, hopAgentKey } from "@/components/tasks/TaskFlowDag";
+import { flowStatusLabel, isBalanceShortage } from "@/components/tasks/taskFlowStatus";
 import { TaskTrace } from "@/components/TaskTrace";
 import { PptPreview } from "@/components/tasks/PptPreview";
 import { ExecutionPanel } from "@/components/tasks/ExecutionPanel";
@@ -58,12 +59,13 @@ function isPptxName(name: string | undefined) {
   return n.endsWith(".pptx") || n.endsWith("deck.pptx") || n.endsWith("report.pptx");
 }
 
-function statusTone(status?: string) {
+function statusTone(status?: string, error?: string | null) {
+  if (isBalanceShortage(error) || status === "failed") {
+    return "text-red-400";
+  }
   switch (status) {
     case "completed":
       return "text-signal";
-    case "failed":
-      return "text-red-400";
     case "waiting_for_user":
     case "waiting_for_agent":
       return "text-amber-300";
@@ -72,6 +74,21 @@ function statusTone(status?: string) {
     default:
       return "text-mist-400";
   }
+}
+
+function nodeHint(n: { error_message?: string | null; output_excerpt?: string | null }): string | null {
+  return n.error_message || n.output_excerpt || null;
+}
+
+function taskBalanceError(task: TaskDetail | null | undefined): string | null {
+  if (!task) return null;
+  for (const n of task.nodes || []) {
+    const hint = nodeHint(n);
+    if (isBalanceShortage(hint)) return "余额不足";
+  }
+  const summary = task.result_json?.summary;
+  if (typeof summary === "string" && isBalanceShortage(summary)) return "余额不足";
+  return null;
 }
 
 function formatDuration(start?: string, end?: string, live?: boolean) {
@@ -182,6 +199,7 @@ export function TaskDetailDrawer({
   const waiting =
     task?.status === "waiting_for_user" || task?.status === "waiting_for_agent";
   const live = !!task && !terminal && !waiting;
+  const balanceErr = taskBalanceError(task);
   const duration = formatDuration(
     task?.created_at,
     task?.finished_at || (terminal ? task?.updated_at : undefined),
@@ -197,7 +215,7 @@ export function TaskDetailDrawer({
     : null;
 
   const reportPreviewUrl = useMemo(() => {
-    if (!detailNode || !isReportSkill(detailNode.skill)) return null;
+    if (!detailNode || !isReportSkill(hopAgentKey(detailNode))) return null;
     const owned = artifacts.filter((item) => item.node_id === detailNode.id);
     const html = owned.find((item) =>
       (item.name || "").replace(/\\/g, "/").endsWith("report.html"),
@@ -210,7 +228,7 @@ export function TaskDetailDrawer({
 
   const markdownPreviewUrl = useMemo(() => {
     if (!detailNode) return null;
-    if (isReportSkill(detailNode.skill) || isPptSkill(detailNode.skill)) return null;
+    if (isReportSkill(hopAgentKey(detailNode)) || isPptSkill(hopAgentKey(detailNode))) return null;
     const owned = artifacts.filter((item) => item.node_id === detailNode.id);
     const md =
       owned.find((item) => (item.name || "").endsWith("output.md")) ||
@@ -219,7 +237,7 @@ export function TaskDetailDrawer({
   }, [artifacts, detailNode]);
 
   const pptArtifact = useMemo(() => {
-    if (!detailNode || !isPptSkill(detailNode.skill)) return null;
+    if (!detailNode || !isPptSkill(hopAgentKey(detailNode))) return null;
     const owned = artifacts.filter((item) => item.node_id === detailNode.id);
     const deck =
       owned.find((item) => (item.name || "").replace(/\\/g, "/").endsWith("deck.pptx")) ||
@@ -272,7 +290,7 @@ export function TaskDetailDrawer({
     }
   }
 
-  const wide = !!(detailNode && isWideDetail(detailNode.skill) && tab === "nodes");
+  const wide = !!(detailNode && isWideDetail(hopAgentKey(detailNode)) && tab === "nodes");
 
   return (
     <aside
@@ -290,9 +308,10 @@ export function TaskDetailDrawer({
           <div className="font-display text-lg text-mist-100">任务详情</div>
           {task ? (
             <span
-              className={`mt-1 font-mono text-[10px] uppercase tracking-[0.14em] ${statusTone(task.status)}`}
+              className={`mt-1 font-mono text-[10px] uppercase tracking-[0.14em] ${statusTone(task.status, balanceErr)}`}
             >
-              {STATUS_LABEL[task.status] || task.status}
+              {flowStatusLabel(task.status, balanceErr)}
+              {task.os_state ? ` · os ${task.os_state}` : ""}
               {typeof task.progress === "number" && !terminal ? ` · ${task.progress}%` : ""}
             </span>
           ) : null}
@@ -591,16 +610,16 @@ export function TaskDetailDrawer({
                 </button>
                 <span className="truncate font-mono text-[10px] text-mist-200">
                   {detailNode.id} ·{" "}
-                  {agentDisplayName(detailNode.agent_key || detailNode.skill, detailNode.agent_name)}
+                  {agentDisplayName(hopAgentKey(detailNode), detailNode.agent_name)}
                 </span>
               </div>
-              {isPptSkill(detailNode.skill) ? (
+              {isPptSkill(hopAgentKey(detailNode)) ? (
                 pptArtifact?.url ? (
                   <PptPreview url={pptArtifact.url} name={pptArtifact.name} />
                 ) : (
                   <p className="text-xs text-mist-400">PPT 还在生成，预览会在 deck.pptx 产出后出现。</p>
                 )
-              ) : isReportSkill(detailNode.skill) ? (
+              ) : isReportSkill(hopAgentKey(detailNode)) ? (
                 reportPreviewUrl ? (
                   <iframe
                     title="报告预览"
@@ -614,12 +633,12 @@ export function TaskDetailDrawer({
               ) : (
                 <div>
                   <div className="text-sm text-mist-100">
-                    {agentDisplayName(detailNode.agent_key || detailNode.skill, detailNode.agent_name)}
+                    {agentDisplayName(hopAgentKey(detailNode), detailNode.agent_name)}
                   </div>
                   <div className="mt-1 font-mono text-[11px] text-mist-400">
-                    {detailNode.agent_key || detailNode.skill}
+                    {hopAgentKey(detailNode)}
                     {" · "}
-                    {STATUS_LABEL[detailNode.status] || detailNode.status}
+                    {flowStatusLabel(detailNode.status, nodeHint(detailNode))}
                     {" · attempt="}
                     {detailNode.attempt ?? 0}
                   </div>
@@ -636,7 +655,9 @@ export function TaskDetailDrawer({
                       {detailNode.agent_endpoint}
                     </div>
                   ) : null}
-                  {detailNode.error_message ? (
+                  {isBalanceShortage(nodeHint(detailNode)) ? (
+                    <p className="mt-2 text-xs text-red-300">余额不足</p>
+                  ) : detailNode.error_message ? (
                     <p className="mt-2 text-xs text-red-300">{detailNode.error_message}</p>
                   ) : null}
                   {detailNode.handoff && typeof detailNode.handoff === "object" ? (
@@ -741,12 +762,12 @@ export function TaskDetailDrawer({
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate text-sm text-mist-100">
-                        {agentDisplayName(node.agent_key || node.skill, node.agent_name)}
+                        {agentDisplayName(hopAgentKey(node), node.agent_name)}
                       </div>
-                      <div className={`mt-1 font-mono text-[11px] ${statusTone(node.status)}`}>
-                        {STATUS_LABEL[node.status] || node.status}
+                      <div className={`mt-1 font-mono text-[11px] ${statusTone(node.status, nodeHint(node))}`}>
+                        {flowStatusLabel(node.status, nodeHint(node))}
                         {" · "}
-                        {node.agent_key || node.skill}
+                        {hopAgentKey(node)}
                         {node.attempt ? ` · #${node.attempt}` : ""}
                       </div>
                     </div>
@@ -770,7 +791,9 @@ export function TaskDetailDrawer({
                       </button>
                     </div>
                   </div>
-                  {node.error_message ? (
+                  {isBalanceShortage(nodeHint(node)) ? (
+                    <p className="mt-2 text-xs text-red-300">余额不足</p>
+                  ) : node.error_message ? (
                     <p className="mt-2 text-xs text-red-300">{node.error_message}</p>
                   ) : null}
                 </div>

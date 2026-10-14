@@ -118,12 +118,12 @@ def sample_node_id(sample_task_id, database_url):
             conn.execute(
                 """
                 INSERT INTO task_nodes (
-                  id, task_id, node_key, skill, status, started_at, created_at, updated_at
+                  id, task_id, node_key, agent_key, status, started_at, created_at, updated_at
                 ) VALUES (
                   %s::uuid, %s::uuid, %s, %s, 'pending', now(), now(), now()
                 )
                 """,
-                (node_id, sample_task_id, node_key, "web-search"),
+                (node_id, sample_task_id, node_key, "claude-code"),
             )
     
     return node_id
@@ -183,7 +183,7 @@ class TestRequestTrackingService:
     ):
         """Test tracking a new request."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         
         result = tracking_service.track_request(
             idempotency_key,
@@ -207,7 +207,7 @@ class TestRequestTrackingService:
     ):
         """Test tracking a duplicate request returns existing."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         
         # First request
         result1 = tracking_service.track_request(
@@ -233,7 +233,7 @@ class TestRequestTrackingService:
     def test_get_request(self, tracking_service, sample_task_id, sample_node_id, sample_agent_id):
         """Test getting an existing request."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         
         # Track request
         tracking_service.track_request(
@@ -256,7 +256,7 @@ class TestRequestTrackingService:
     def test_mark_request_running(self, tracking_service, sample_task_id, sample_node_id, sample_agent_id):
         """Test marking a request as running."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         
         # Track request
         tracking_service.track_request(
@@ -279,7 +279,7 @@ class TestRequestTrackingService:
     def test_mark_request_completed(self, tracking_service, sample_task_id, sample_node_id, sample_agent_id):
         """Test marking a request as completed."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         response_json = {"result": "test result", "artifacts": []}
         
         # Track request
@@ -305,7 +305,7 @@ class TestRequestTrackingService:
     def test_mark_request_failed(self, tracking_service, sample_task_id, sample_node_id, sample_agent_id):
         """Test marking a request as failed."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         error_message = "Test error"
         
         # Track request
@@ -331,7 +331,7 @@ class TestRequestTrackingService:
     def test_is_request_completed(self, tracking_service, sample_task_id, sample_node_id, sample_agent_id):
         """Test checking if a request is completed."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         response_json = {"result": "test result"}
         
         # Not completed initially
@@ -353,7 +353,7 @@ class TestRequestTrackingService:
     def test_get_cached_response(self, tracking_service, sample_task_id, sample_node_id, sample_agent_id):
         """Test getting cached response for completed request."""
         idempotency_key = tracking_service.generate_idempotency_key()
-        request_json = {"query": "test query", "skill": "web-search"}
+        request_json = {"query": "test query", "agent_key": "claude-code"}
         response_json = {"result": "test result", "artifacts": [{"name": "test"}]}
         
         # Track and complete request

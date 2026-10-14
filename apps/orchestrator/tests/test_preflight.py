@@ -43,6 +43,36 @@ def test_classify_ready_with_runner():
     assert v["blocking"] == []
 
 
+def test_classify_hosted_ready_without_cli():
+    services = {
+        "postgres": {"ok": True, "pending_outbox": 0},
+        "redis": {"ok": True},
+        "worker": {"ok": True},
+        "outbox": {"ok": True},
+    }
+    agents = [
+        {
+            "agent_key": "claude-code",
+            "reachable": True,
+            "runner_ready": False,
+            "runner_reason": "missing CLI",
+        },
+        {
+            "agent_key": "hermes",
+            "reachable": True,
+            "runner_ready": True,
+            "runner_mode": "hermes",
+        },
+    ]
+    v = classify(services, agents)
+    assert v["can_run"] is True
+    assert v["hosted_ready"] is True
+    assert "no_runner_ready" not in v["warnings"]
+    assert "partial_runners" in v["warnings"]
+    ids = {s["id"]: s["active"] for s in v["recover_steps"]}
+    assert ids["aopd"] is False
+
+
 def test_classify_degraded_when_cli_missing():
     services = {
         "postgres": {"ok": True, "pending_outbox": 0},
@@ -61,7 +91,10 @@ def test_classify_degraded_when_cli_missing():
     v = classify(services, agents)
     assert v["status"] == "degraded"
     assert v["can_run"] is True
+    assert v["hosted_ready"] is False
     assert "no_runner_ready" in v["warnings"]
+    ids = {s["id"]: s["active"] for s in v["recover_steps"]}
+    assert ids["aopd"] is True
 
 
 def test_classify_exposes_waiting_hitl_count():
@@ -103,13 +136,18 @@ def test_classify_exposes_waiting_agent_count():
 
 def test_probe_agent_health_parses_runner_ready(monkeypatch):
     class _Resp:
-        status_code = 200
-        content = b'{"runner_ready": false, "runner_reason": "no key"}'
+        status = 200
 
-        def json(self):
-            return {"runner_ready": False, "runner_reason": "no key"}
+        def read(self):
+            return b'{"runner_ready": false, "runner_reason": "no key"}'
 
-    monkeypatch.setattr("preflight.httpx.get", lambda *a, **k: _Resp())
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
     p = probe_agent_health("http://127.0.0.1:8011/")
     assert p["reachable"] is True
     assert p["runner_ready"] is False

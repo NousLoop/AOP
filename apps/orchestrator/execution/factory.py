@@ -7,7 +7,7 @@ import os
 from typing import Optional
 
 from .config import ExecutionConfig
-from .events import ExecutionEventBus
+from .events import ExecutionEventBus, PostgresExecutionEventBus
 from .record import ExecutionRecordStore, PostgresExecutionRecordStore
 from .retry import RetryPolicy, TimeoutPolicy
 from .service import ExecutionService
@@ -27,7 +27,6 @@ def build_execution_service(
     if os.getenv("PYTEST_CURRENT_TEST") and cfg.store != "postgres":
         use_memory = True
 
-    events = ExecutionEventBus()
     retry = RetryPolicy(
         max_retries=cfg.max_retries,
         base_delay_s=cfg.base_delay_s,
@@ -40,7 +39,9 @@ def build_execution_service(
     )
 
     store: ExecutionRecordStore | PostgresExecutionRecordStore
+    events: ExecutionEventBus
     if use_memory:
+        events = ExecutionEventBus()
         store = ExecutionRecordStore()
         # Hermetic: don't hit Postgres outbox from memory path
         if cfg.store != "postgres":
@@ -48,15 +49,16 @@ def build_execution_service(
         logger.info("execution store=memory")
     else:
         try:
+            events = PostgresExecutionEventBus()
+            events.ping()
             store = PostgresExecutionRecordStore()
-            # Probe connectivity lightly
             store.list_for_root("__probe_nonexistent__")
-            logger.info("execution store=postgres")
+            logger.info("execution store=postgres events=postgres")
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Postgres execution store unavailable (%s); falling back to memory", exc
-            )
-            store = ExecutionRecordStore()
+            raise RuntimeError(
+                "Postgres execution store unavailable; "
+                "set EXECUTION_STORE=memory only for hermetic tests"
+            ) from exc
 
     svc = ExecutionService(
         store=store,  # type: ignore[arg-type]

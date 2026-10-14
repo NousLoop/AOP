@@ -24,6 +24,11 @@ type registerRequest struct {
 	Endpoint string `json:"endpoint"`
 }
 
+type updateMetaRequest struct {
+	Identity    *string `json:"identity"`
+	OwnerUserID *string `json:"owner_user_id"`
+}
+
 func (h *AgentHandlers) Routes(r chi.Router) {
 	r.Get("/", h.list)
 
@@ -32,6 +37,7 @@ func (h *AgentHandlers) Routes(r chi.Router) {
 			r.Use(requireScopeIfAuthed(h.Auth, "agent.write"))
 		}
 		r.Post("/register", h.register)
+		r.Patch("/{agentID}", h.updateMeta)
 		r.Delete("/{agentID}", h.delete)
 		r.Post("/{agentID}/disable", h.disable)
 		r.Post("/{agentID}/enable", h.enable)
@@ -102,6 +108,38 @@ func (h *AgentHandlers) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to get agent", err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+func (h *AgentHandlers) updateMeta(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agentID")
+	var req updateMetaRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "invalid json body", nil)
+		return
+	}
+	if req.Identity == nil && req.OwnerUserID == nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "identity or owner_user_id required", nil)
+		return
+	}
+	tenant := tenantOrDefault(r, h.Tenant)
+	rec, err := h.Store.UpdateMeta(r.Context(), tenant, agentID, req.Identity, req.OwnerUserID)
+	if errors.Is(err, registry.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "agent not found", nil)
+		return
+	}
+	if errors.Is(err, registry.ErrInvalidIdentity) || errors.Is(err, registry.ErrInvalidOwner) {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error(), nil)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to update agent meta", err.Error())
+		return
+	}
+	recordAudit(h.Audit, r, tenant, "agent.update_meta", "agent", agentID, map[string]any{
+		"identity":      rec.Identity,
+		"owner_user_id": rec.OwnerUserID,
+	})
 	writeJSON(w, http.StatusOK, rec)
 }
 

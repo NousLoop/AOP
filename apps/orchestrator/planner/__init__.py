@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from defaults import DEFAULT_TENANT_ID, database_url as resolve_database_url
+from defaults import (
+    DEFAULT_TENANT_ID,
+    database_url as resolve_database_url,
+    is_work_agent,
+)
 
 import json
 import os
@@ -18,9 +22,6 @@ from .json_plan import extract_json_object, nodes_from_payload
 from router import hitl_skills
 
 _NO_SPAWN = "请独立完成本任务，不要再 spawn/委派同伴。"
-
-# Platform supervisor keys are registered for heartbeat, not task work.
-_SUPERVISOR_KEY_PREFIXES = ("aop-node",)
 
 _MULTI_AGENT_MARKERS = (
     "使用目前所有的agent",
@@ -69,12 +70,6 @@ def _env_on(name: str, *, default: str = "") -> bool:
 
 def _env_off(name: str, *, default: str = "1") -> bool:
     return os.getenv(name, default).lower() in {"0", "false", "no", "off"}
-
-def is_work_agent(key: str) -> bool:
-    k = (key or "").strip().lower()
-    if not k:
-        return False
-    return not any(k.startswith(p) for p in _SUPERVISOR_KEY_PREFIXES)
 
 def coerce_registry(
     agents: Sequence[RegisteredAgent] | Iterable[str] | None,
@@ -137,14 +132,13 @@ def _alias_patterns(key: str, name: str = "") -> list[tuple[int, str]]:
     return keyed
 
 def default_agent(available: set[str]) -> str | None:
-    """Prefer DEFAULT_AGENT when online; else any registered work agent."""
+    """Prefer DEFAULT_AGENT (claude-code) when ready; else the hosted kernel."""
     work = {k for k in available if is_work_agent(k)}
     if not work:
         return None
-    preferred = (os.getenv("DEFAULT_AGENT") or "").strip()
+    preferred = (os.getenv("DEFAULT_AGENT") or "claude-code").strip()
     if preferred and preferred in work:
         return preferred
-    # Stable pick when env unset: lexicographic among online work agents.
     return sorted(work)[0]
 
 def mentioned_agents(
@@ -289,7 +283,7 @@ def parallel_harness_nodes(
         nodes.append(
             PlanNode(
                 id=_node_id_for(key, used),
-                skill=key,
+                agent_key=key,
                 depends_on=[],
                 requires_approval=key in hitl,
                 instruction=(
@@ -303,18 +297,20 @@ def parallel_harness_nodes(
         )
     return nodes
 
-def probe_agent_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
+def probe_agent_ready(endpoint: str, *, timeout_s: float = 0.4) -> bool:
     """GET ``/health`` — treat missing flag as ready (older agents)."""
     if _env_on("PLANNER_SKIP_READY_PROBE"):
         return True
     url = (endpoint or "").rstrip("/") + "/health"
     try:
-        import httpx
+        import json
+        import urllib.request
 
-        r = httpx.get(url, timeout=timeout_s)
-        if r.status_code >= 400:
-            return False
-        data = r.json() if r.content else {}
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+            raw = resp.read()
+        if not raw:
+            return True
+        data = json.loads(raw.decode("utf-8", errors="replace"))
         if not isinstance(data, dict):
             return True
         if "runner_ready" in data:
@@ -323,16 +319,48 @@ def probe_agent_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
     except Exception:  # noqa: BLE001
         return False
 
+
+def probe_keys_ready(
+    endpoints: dict[str, str],
+    keys: Iterable[str],
+    *,
+    timeout_s: float = 0.8,
+) -> list[str]:
+    """Probe ``/health`` in parallel so plan() does not serial-wait 10 agents."""
+    wanted = [k for k in sorted({str(k).strip() for k in keys if k}) if endpoints.get(k)]
+    if not wanted:
+        return []
+    if len(wanted) == 1:
+        k = wanted[0]
+        return [k] if probe_agent_ready(endpoints[k], timeout_s=timeout_s) else []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    ready: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(16, len(wanted))) as pool:
+        futs = {
+            pool.submit(probe_agent_ready, endpoints[k], timeout_s=timeout_s): k
+            for k in wanted
+        }
+        for fut in as_completed(futs):
+            key = futs[fut]
+            try:
+                if fut.result():
+                    ready.append(key)
+            except Exception:  # noqa: BLE001
+                continue
+    return sorted(ready)
+
 @dataclass
 class PlannerResult:
     plan: TaskPlan
     method: str
-    available_skills: list[str] = field(default_factory=list)
+    available_agent_keys: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "method": self.method,
-            "available_skills": self.available_skills,
+            "available_agent_keys": self.available_agent_keys,
             "plan": self.plan.to_dict(),
         }
 
@@ -371,7 +399,7 @@ class Planner:
                 nodes = multi
                 method = "heuristic_multi"
 
-        # 2) Opt-in multi-step decompose (legacy specialty skills).
+        # 2) Opt-in multi-step: fragments that name distinct agent_keys.
         if not nodes and not _env_off("PLANNER_V2") and _env_on("PLANNER_MULTI_STEP"):
             stepped = decompose_to_nodes(goal, available, hitl=hitl)
             if stepped:
@@ -393,7 +421,7 @@ class Planner:
                         goal=goal,
                         nodes=llm_nodes,
                     )
-                    validate_plan(trial, available_skills=available)
+                    validate_plan(trial, available_agent_keys=available)
                     nodes = llm_nodes
                     method = "llm_repaired" if repaired else "llm"
                 except DAGValidationError:
@@ -403,16 +431,16 @@ class Planner:
         if not nodes:
             agent = default_agent(available)
             if agent:
-                nodes = [PlanNode(id="run", skill=agent)]
+                nodes = [PlanNode(id="run", agent_key=agent)]
             elif available:
-                nodes = [PlanNode(id="step1", skill=sorted(available)[0])]
+                nodes = [PlanNode(id="step1", agent_key=sorted(available)[0])]
             else:
                 raise ValueError("no online agents registered; cannot plan")
             method = "fallback"
 
         plan = TaskPlan(title=title or _short_title(goal), goal=goal, nodes=nodes)
-        validate_plan(plan, available_skills=available)
-        return PlannerResult(plan=plan, method=method, available_skills=sorted(available))
+        validate_plan(plan, available_agent_keys=available)
+        return PlannerResult(plan=plan, method=method, available_agent_keys=sorted(available))
 
     def list_registered_agents(self) -> list[RegisteredAgent]:
         """Online work agents from the registry (excludes aop-node supervisor)."""
@@ -468,15 +496,9 @@ class Planner:
         return out
 
     def list_ready_agents(self, available: set[str] | None = None) -> list[str]:
-        """Online agents whose ``/health`` reports runner_ready (or missing flag)."""
+        """Online work agents. Health is preflight's job — do not block plan()."""
         keys = set(available) if available is not None else set(self.list_available_agents())
-        endpoints = self.list_agent_endpoints()
-        ready: list[str] = []
-        for key in sorted(keys):
-            ep = endpoints.get(key)
-            if ep and probe_agent_ready(ep):
-                ready.append(key)
-        return ready
+        return sorted(k for k in keys if is_work_agent(k))
 
     def _heuristic_nodes(
         self,
@@ -501,7 +523,11 @@ class Planner:
         labels: dict[str, str],
     ) -> list[PlanNode]:
         named = requested_agent(goal, available, registry)
-        agent = named or default_agent(available)
+        pool = available
+        if not named:
+            ready = {k for k in self.list_ready_agents(available) if is_work_agent(k)}
+            pool = ready or available
+        agent = named or default_agent(pool)
         if not agent:
             return []
         work = extract_work_goal(goal, registry) if named else goal
@@ -515,7 +541,7 @@ class Planner:
         return [
             PlanNode(
                 id="run",
-                skill=agent,
+                agent_key=agent,
                 depends_on=[],
                 requires_approval=agent in hitl,
                 instruction=instruction,
@@ -541,12 +567,12 @@ class Planner:
         model = os.getenv("PLANNER_MODEL", "gpt-4o-mini")
         prompt = {
             "goal": goal,
-            "available_skills": sorted(available),
+            "available_agent_keys": sorted(available),
             "schema": {
                 "nodes": [
                     {
                         "id": "string",
-                        "skill": "must be in available_skills",
+                        "agent_key": "must be in available_agent_keys",
                         "depends_on": ["node_id"],
                     }
                 ]
@@ -562,8 +588,8 @@ class Planner:
                         "role": "system",
                         "content": (
                             "You are a task planner for a multi-agent platform. "
-                            "Return JSON with key nodes. Only use available skills "
-                            "(each skill is an agent_key). Prefer parallel independent "
+                            "Return JSON with key nodes. Only use available_agent_keys "
+                            "(each hop is an agent_key). Prefer parallel independent "
                             "nodes. Keep 2-5 nodes. When the goal asks to use all agents "
                             "/ 所有agent / 全部智能体, create one parallel node per "
                             "available agent_key with empty depends_on."
@@ -590,28 +616,28 @@ class Planner:
                 if not isinstance(n, dict):
                     repaired = True
                     continue
-                skill = str(n.get("skill") or "")
+                agent_key = str(n.get("agent_key") or "")
                 nodes.append(
                     PlanNode(
                         id=str(n.get("id") or "node"),
-                        skill=skill,
+                        agent_key=agent_key,
                         depends_on=[str(d) for d in (n.get("depends_on") or [])],
                         requires_approval=bool(n.get("requires_approval"))
-                        or skill in hitl,
+                        or agent_key in hitl,
                     )
                 )
             trial = TaskPlan(title="t", goal=goal, nodes=nodes)
-            validate_plan(trial, available_skills=available)
+            validate_plan(trial, available_agent_keys=available)
             return nodes, repaired
         except (DAGValidationError, KeyError, TypeError, ValueError):
             repaired = True
-            fixed = nodes_from_payload(data, available_skills=available, hitl=hitl)
+            fixed = nodes_from_payload(data, available_agent_keys=available, hitl=hitl)
             if not fixed:
                 return None, False
             try:
                 validate_plan(
                     TaskPlan(title="t", goal=goal, nodes=fixed),
-                    available_skills=available,
+                    available_agent_keys=available,
                 )
             except DAGValidationError:
                 return None, False

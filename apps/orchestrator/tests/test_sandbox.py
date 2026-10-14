@@ -53,7 +53,7 @@ def test_skill_denylist():
     ):
         with pytest.raises(SandboxViolation, match="denied"):
             check_skill("text-to-video")
-        check_skill("web-search")
+            check_skill("claude-code")
 
 
 def test_input_clamp_and_timeout():
@@ -62,17 +62,17 @@ def test_input_clamp_and_timeout():
         {
             "AGENT_SANDBOX": "1",
             "AGENT_MAX_INPUT_CHARS": "10",
-            "AGENT_SKILL_TIMEOUTS": "web-search:12",
+            "AGENT_SKILL_TIMEOUTS": "claude-code:12",
             "A2A_TIMEOUT": "60",
         },
         clear=False,
     ):
         pol = SandboxPolicy.from_env()
         assert clamp_input("abcdefghijklmnop", pol) == "abcdefghij"
-        assert timeout_for_skill("web-search", pol) == 12.0
+        assert timeout_for_skill("claude-code", pol) == 12.0
         q, t = guard_call(
             endpoint="http://127.0.0.1:8012/",
-            skill="web-search",
+            skill="claude-code",
             query="x" * 100,
             policy=pol,
         )

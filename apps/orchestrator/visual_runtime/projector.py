@@ -99,6 +99,9 @@ def apply_event_to_graph(
         nodes[task_node_id]["status"] = node_status
         if et == "task.completed":
             nodes[task_node_id]["status"] = "completed"
+            tmeta = dict(nodes[task_node_id].get("metadata") or {})
+            tmeta.pop("error", None)
+            nodes[task_node_id]["metadata"] = tmeta
         elif et == "task.failed":
             nodes[task_node_id]["status"] = "failed"
 
@@ -146,7 +149,7 @@ def apply_event_to_graph(
                     "id": parent_stable,
                     "type": "agent",
                     "label": parent_agent_id,
-                    "status": "completed",
+                    "status": "pending",
                     "agent_id": parent_agent_id,
                     "execution_id": None,
                     "parent_id": task_node_id,
@@ -209,20 +212,39 @@ def apply_event_to_graph(
         }
 
     if et.endswith(".failed") or et.endswith(".timeout"):
-        err_id = f"error:{task_id or ev.get('event_id')}"
-        nodes[err_id] = {
-            "id": err_id,
-            "type": "error",
-            "label": "ERROR",
-            "status": "failed",
-            "agent_id": agent_id,
-            "execution_id": ev.get("execution_id"),
-            "parent_id": f"agent:{agent_id}" if agent_id else task_node_id,
-            "metadata": {
-                "error": (ev.get("payload") or {}).get("error"),
-                "event_type": et,
-            },
-        }
+        payload = ev.get("payload") or {}
+        err_text = str(
+            payload.get("error")
+            or payload.get("message")
+            or ""
+        ).strip()
+        # Fold the failure onto the agent. A floating ERROR satellite is not a hop.
+        if agent_id:
+            stable_id = f"agent:{agent_id}"
+            existing = nodes.get(stable_id)
+            if existing is None:
+                nodes[stable_id] = {
+                    "id": stable_id,
+                    "type": "agent",
+                    "label": agent_id,
+                    "status": "failed",
+                    "agent_id": agent_id,
+                    "execution_id": ev.get("execution_id"),
+                    "parent_id": task_node_id,
+                    "metadata": {"error": err_text or None, "event_type": et},
+                }
+            else:
+                existing["status"] = "failed"
+                meta = dict(existing.get("metadata") or {})
+                if err_text:
+                    meta["error"] = err_text
+                meta["event_type"] = et
+                existing["metadata"] = meta
+                nodes[stable_id] = existing
+        elif err_text:
+            tmeta = dict(nodes[task_node_id].get("metadata") or {})
+            tmeta["error"] = err_text
+            nodes[task_node_id]["metadata"] = tmeta
 
     max_seq = graph.get("sequence") or 0
     if seq is not None and seq > max_seq:
@@ -428,6 +450,49 @@ _TERMINAL = frozenset({"completed", "failed", "cancelled"})
 _OPEN_AGENT = frozenset({"running", "active", "discovered", "pending", "retrying"})
 
 
+def _short_error_label(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return "ERROR"
+    low = t.lower()
+    if "余额不足" in t or "insufficient balance" in low or "insufficient_quota" in low:
+        return "余额不足"
+    if "payment required" in low or ("402" in t and "api error" in low):
+        return "余额不足"
+    return t.split("\n", 1)[0][:24]
+
+
+def _harness_output_error(*parts: object) -> str | None:
+    try:
+        from agent_runtime.harness.runners._cli_common import harness_output_error
+
+        return harness_output_error(*parts)
+    except ImportError:
+        blob = "\n".join(str(p) for p in parts if p is not None and str(p).strip())
+        if "余额不足" in blob:
+            return "余额不足"
+        return None
+
+
+def _hop_visual_status(status: Any) -> str | None:
+    s = str(status or "").lower()
+    if s in {"failed", "error"}:
+        return "failed"
+    if s in {"cancelled", "canceled"}:
+        return "cancelled"
+    if s in {"success", "completed", "succeeded"}:
+        return "completed"
+    if s in {"retrying"}:
+        return "retrying"
+    if s in {"running", "ready"}:
+        return "running"
+    if s in {"waiting_for_user", "waiting_for_agent"}:
+        return s
+    if s in {"pending"}:
+        return "pending"
+    return None
+
+
 def _reconcile_with_task_row(
     graph: dict[str, Any],
     task_row: dict[str, Any] | None,
@@ -436,21 +501,102 @@ def _reconcile_with_task_row(
     if not task_row:
         return graph
     mapped = _map_task_status(task_row.get("status"))
-    if not mapped:
-        return graph
-    graph["status"] = mapped
     root = str(task_row.get("id") or graph.get("task_id") or "")
     task_node_id = f"task:{root}"
+    if mapped:
+        graph["status"] = mapped
+        for n in graph.get("nodes") or []:
+            if n.get("id") == task_node_id or n.get("type") == "task":
+                n["status"] = mapped
+                if mapped == "completed":
+                    meta = dict(n.get("metadata") or {})
+                    meta.pop("error", None)
+                    n["metadata"] = meta
+            elif (
+                mapped in _TERMINAL
+                and n.get("type") == "agent"
+                and str(n.get("status") or "").lower() in _OPEN_AGENT
+            ):
+                n["status"] = "completed" if mapped == "completed" else mapped
+
+    hops = task_row.get("nodes") if isinstance(task_row.get("nodes"), list) else []
+    by_agent: dict[str, dict[str, Any]] = {}
+    by_key: dict[str, dict[str, Any]] = {}
+    for hop in hops:
+        if not isinstance(hop, dict):
+            continue
+        aid = str(hop.get("agent_id") or "").strip()
+        key = str(hop.get("agent_key") or hop.get("id") or "").strip()
+        if aid:
+            by_agent[aid] = hop
+        if key:
+            by_key[key.lower()] = hop
+
     for n in graph.get("nodes") or []:
-        if n.get("id") == task_node_id or n.get("type") == "task":
-            n["status"] = mapped
-        elif (
-            mapped in _TERMINAL
-            and n.get("type") == "agent"
-            and str(n.get("status") or "").lower() in _OPEN_AGENT
-        ):
-            # agent.completed sometimes lacks agent_id; terminal task closes hops
-            n["status"] = "completed" if mapped == "completed" else mapped
+        if n.get("type") != "agent":
+            continue
+        aid = str(n.get("agent_id") or "")
+        label = str(n.get("label") or n.get("metadata", {}).get("agent_key") or "").lower()
+        hop = by_agent.get(aid) or by_key.get(label)
+        if not hop:
+            continue
+        vis = _hop_visual_status(hop.get("status"))
+        err_msg = str(hop.get("error_message") or "").strip()
+        excerpt = str(hop.get("output_excerpt") or "").strip()
+        obvious = _harness_output_error(err_msg, excerpt)
+        if vis == "completed" and obvious:
+            vis = "failed"
+        if vis:
+            n["status"] = vis
+        meta = dict(n.get("metadata") or {})
+        if vis == "failed":
+            meta["error"] = obvious or err_msg or excerpt or meta.get("error")
+        else:
+            meta.pop("error", None)
+        n["metadata"] = meta
+    graph = _demote_task_if_no_real_hop(graph)
+    # Drop leftover error satellites — failure lives on the hop agent.
+    graph["nodes"] = [n for n in (graph.get("nodes") or []) if n.get("type") != "error"]
+    keep = {n["id"] for n in graph["nodes"]}
+    graph["edges"] = [
+        e for e in (graph.get("edges") or []) if e.get("source") in keep and e.get("target") in keep
+    ]
+    return graph
+
+
+def _is_dispatcher_agent(n: dict[str, Any]) -> bool:
+    aid = str(n.get("agent_id") or n.get("label") or n.get("id") or "").lower()
+    return aid == "orchestrator" or aid.endswith(":orchestrator") or n.get("label") == "orchestrator"
+
+
+def _demote_task_if_no_real_hop(graph: dict[str, Any]) -> dict[str, Any]:
+    """A completed task with only stub/failed work hops is not a success."""
+    if str(graph.get("status") or "").lower() != "completed":
+        return graph
+    work = [
+        n
+        for n in (graph.get("nodes") or [])
+        if n.get("type") == "agent" and not _is_dispatcher_agent(n)
+    ]
+    if not work:
+        return graph
+    if any(str(n.get("status") or "").lower() == "completed" for n in work):
+        return graph
+    graph["status"] = "failed"
+    err = None
+    for n in work:
+        if str(n.get("status") or "").lower() == "failed":
+            err = (n.get("metadata") or {}).get("error") or err
+            if err:
+                break
+    for n in graph.get("nodes") or []:
+        if n.get("type") != "task":
+            continue
+        n["status"] = "failed"
+        meta = dict(n.get("metadata") or {})
+        if err:
+            meta["error"] = err
+        n["metadata"] = meta
     return graph
 
 
@@ -476,9 +622,11 @@ def _collab_status(node: dict[str, Any]) -> str:
     if state in {"busy", "running", "working"}:
         return "running"
     if state in {"ready", "online"}:
-        return "completed"
+        return "discovered"
     if state in {"draining", "waiting"}:
         return "waiting"
-    if state in {"offline", "failed"}:
+    if state in {"offline", "failed", "error"}:
         return "failed"
-    return state or "completed"
+    if state in {"completed", "success", "succeeded"}:
+        return "completed"
+    return state or "pending"

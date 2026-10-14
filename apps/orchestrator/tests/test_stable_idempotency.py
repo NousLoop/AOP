@@ -38,12 +38,12 @@ class TestStableIdempotencyKey:
             nodes=[
                 PlanNode(
                     id="node1",
-                    skill="web-search",
+                    agent_key="claude-code",
                     depends_on=[],
                 ),
                 PlanNode(
                     id="node2",
-                    skill="web-search",
+                    agent_key="claude-code",
                     depends_on=["node1"],
                 ),
             ],

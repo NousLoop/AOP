@@ -15,21 +15,36 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { TaskNode, TaskPlan } from "@/lib/api";
 import { reactFlowOnError, useClientMounted } from "@/lib/reactFlow";
-import { STATUS_COLOR, STATUS_LABEL } from "./taskFlowStatus";
+import { STATUS_COLOR, flowStatusLabel, flowVisualStatus } from "./taskFlowStatus";
 import {
   TASK_FLOW_EDGE_TYPES,
   TASK_FLOW_NODE_TYPES,
   type DagNodeData,
 } from "./taskFlowTypes";
 
-/** Friendly labels for harness virtual agents (plan.skill == agent_key). */
+/** Friendly labels for work agents (plan hop is agent_key). */
 const AGENT_LABEL: Record<string, string> = {
   "claude-code": "Claude Code",
   "deepseek-harness": "DeepSeek",
   openclaw: "OpenClaw",
   hermes: "Hermes",
   pi: "Pi",
+  "aopd-claude-code": "aopd Claude Code",
+  "aopd-deepseek-harness": "aopd DeepSeek Harness",
+  "aopd-openclaw": "aopd OpenClaw",
+  "aopd-hermes": "aopd Hermes",
+  "aopd-pi": "aopd Pi",
 };
+
+export function hopAgentKey(node: {
+  id?: string;
+  agent_key?: string | null;
+  agent_name?: string | null;
+}): string {
+  const assigned = (node.agent_key || "").trim();
+  if (assigned) return assigned;
+  return (node.agent_name || node.id || "agent").trim();
+}
 
 export function agentDisplayName(key?: string | null, fallbackName?: string | null): string {
   const k = (key || "").trim();
@@ -55,7 +70,7 @@ function buildLayout(plan: TaskPlan | null | undefined, nodes: TaskNode[]) {
     plan?.nodes ||
     nodes.map((n) => ({
       id: n.id,
-      skill: n.agent_key || n.skill,
+      agent_key: n.agent_key,
       depends_on: [] as string[],
     }));
   const ids = planNodes.map((n) => n.id);
@@ -84,7 +99,9 @@ function buildLayout(plan: TaskPlan | null | undefined, nodes: TaskNode[]) {
   }
 
   const statusMap = new Map(nodes.map((n) => [n.id, n]));
-  const planSkill = new Map(planNodes.map((n) => [n.id, n.skill]));
+  const planAgent = new Map(
+    planNodes.map((n) => [n.id, n.agent_key || ""]),
+  );
 
   const rfNodes: Node<DagNodeData>[] = [];
   const rfEdges: Edge[] = [];
@@ -95,7 +112,13 @@ function buildLayout(plan: TaskPlan | null | undefined, nodes: TaskNode[]) {
     layerIds.forEach((id, idx) => {
       const live = statusMap.get(id);
       const st = live?.status || "pending";
-      const agentKey = live?.agent_key || planSkill.get(id) || live?.skill || id;
+      const err = live?.error_message || live?.output_excerpt;
+      const visual = flowVisualStatus(st, err);
+      const agentKey = hopAgentKey({
+        id,
+        agent_key: live?.agent_key || planAgent.get(id),
+        agent_name: live?.agent_name,
+      });
       rfNodes.push({
         id,
         type: "dagNode",
@@ -104,8 +127,8 @@ function buildLayout(plan: TaskPlan | null | undefined, nodes: TaskNode[]) {
           nodeId: id,
           agentKey,
           agentLabel: agentDisplayName(agentKey, live?.agent_name),
-          status: st,
-          statusLabel: STATUS_LABEL[st] || st,
+          status: visual,
+          statusLabel: flowStatusLabel(st, err),
           attempt: live?.attempt,
         },
         selected: false,

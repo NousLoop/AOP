@@ -61,6 +61,7 @@ class AgentLifecycleService:
                     existing.version = version
                 if capabilities:
                     existing.capabilities.update(capabilities)
+                self._persist(existing)
                 return AgentLifecycleRecord(**existing.to_dict())
             rec = AgentLifecycleRecord(
                 agent_id=agent_id,
@@ -72,6 +73,7 @@ class AgentLifecycleService:
                 max_concurrency=max_concurrency,
             )
             self._agents[agent_id] = rec
+            self._persist(rec)
             self._emit(AgentLifecycleStateMachine.event_for(AgentLifecycleState.REGISTERED), rec)
             return AgentLifecycleRecord(**rec.to_dict())
 
@@ -85,6 +87,7 @@ class AgentLifecycleService:
                 if result.state == AgentLifecycleState.DRAINING:
                     rec.drain_started_at = rec.updated_at
                 self._emit(result.event_type, rec)
+            self._persist(rec)
             return AgentLifecycleRecord(**rec.to_dict())
 
     def mark_ready(self, agent_id: str) -> AgentLifecycleRecord:
@@ -100,7 +103,7 @@ class AgentLifecycleService:
         capabilities: dict[str, Any] | None = None,
     ) -> AgentLifecycleRecord:
         with self._lock:
-            if agent_id not in self._agents:
+            if self._cached(agent_id) is None:
                 self.register(agent_id, version=version, capabilities=capabilities)
             rec = self._agents[agent_id]
             rec.last_seen = _utc_now()
@@ -148,6 +151,7 @@ class AgentLifecycleService:
                         self._emit(result.event_type, rec)
                 except IllegalTransition:
                     pass
+            self._persist(rec)
             return AgentLifecycleRecord(**rec.to_dict())
 
     def drain(self, agent_id: str) -> AgentLifecycleRecord:
@@ -161,7 +165,7 @@ class AgentLifecycleService:
 
     def on_task_started(self, agent_id: str) -> AgentLifecycleRecord:
         with self._lock:
-            if agent_id not in self._agents:
+            if self._cached(agent_id) is None:
                 self.register(agent_id)
             rec = self._agents[agent_id]
             if not AgentLifecycleStateMachine.accepts_work(rec.state):
@@ -182,11 +186,12 @@ class AgentLifecycleService:
                 return self.transition(agent_id, AgentLifecycleState.OFFLINE)
             if rec.active_tasks == 0 and rec.state == AgentLifecycleState.BUSY.value:
                 return self.transition(agent_id, AgentLifecycleState.READY)
+            self._persist(rec)
             return AgentLifecycleRecord(**rec.to_dict())
 
     def health(self, agent_id: str, *, stale_after_s: float = 60.0) -> dict[str, Any]:
         with self._lock:
-            rec = self._agents.get(agent_id)
+            rec = self._cached(agent_id)
             if not rec:
                 return {
                     "agent_id": agent_id,
@@ -253,7 +258,7 @@ class AgentLifecycleService:
                 continue
             try:
                 with self._lock:
-                    rec = self._agents.get(agent_id)
+                    rec = self._cached(agent_id)
                     if not rec:
                         continue
                     if rec.state == AgentLifecycleState.OFFLINE.value:
@@ -277,12 +282,14 @@ class AgentLifecycleService:
                             rec.state = result.state.value  # type: ignore[union-attr]
                             rec.updated_at = _utc_now()
                             self._emit(result.event_type, rec)
+                            self._persist(rec)
                             offline.append(agent_id)
                     except IllegalTransition:
                         # Last resort: set OFFLINE for recovery scanning
                         rec.state = AgentLifecycleState.OFFLINE.value
                         rec.updated_at = _utc_now()
                         self._emit("agent.offline", rec)
+                        self._persist(rec)
                         offline.append(agent_id)
             except Exception:  # noqa: BLE001
                 continue
@@ -290,12 +297,14 @@ class AgentLifecycleService:
 
     def get(self, agent_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
-            rec = self._agents.get(agent_id)
+            rec = self._cached(agent_id)
             return rec.to_dict() if rec else None
 
     def list_agent_ids(self) -> list[str]:
         with self._lock:
-            return list(self._agents.keys())
+            ids = set(self._agents.keys())
+            ids.update(self._list_persisted_ids())
+            return list(ids)
 
     def router_accepts(self, agent_id: str) -> tuple[bool, str]:
         """P4.15: READY/BUSY + healthy + capacity available."""
@@ -321,10 +330,28 @@ class AgentLifecycleService:
         return True, "ok"
 
     def _require(self, agent_id: str) -> AgentLifecycleRecord:
-        rec = self._agents.get(agent_id)
+        rec = self._cached(agent_id)
         if not rec:
             raise KeyError(f"agent not registered: {agent_id}")
         return rec
+
+    def _cached(self, agent_id: str) -> Optional[AgentLifecycleRecord]:
+        rec = self._agents.get(agent_id)
+        if rec:
+            return rec
+        loaded = self._load(agent_id)
+        if loaded:
+            self._agents[agent_id] = loaded
+        return loaded
+
+    def _load(self, agent_id: str) -> Optional[AgentLifecycleRecord]:
+        return None
+
+    def _list_persisted_ids(self) -> list[str]:
+        return []
+
+    def _persist(self, rec: AgentLifecycleRecord) -> None:
+        return
 
     def _emit(self, event_type: str, rec: AgentLifecycleRecord) -> None:
         if not self._events:
@@ -344,4 +371,117 @@ class AgentLifecycleService:
         )
 
 
-__all__ = ["AgentLifecycleService", "AgentLifecycleRecord", "IllegalTransition"]
+class PostgresAgentLifecycleService(AgentLifecycleService):
+    """Write-through lifecycle so READY/OFFLINE survives orchestrator restart."""
+
+    def __init__(self, event_bus=None, database_url: str | None = None):
+        super().__init__(event_bus=event_bus)
+        from defaults import database_url as resolve_database_url
+
+        self.database_url = resolve_database_url(database_url)
+
+    def _connect(self):
+        from db import connect
+
+        return connect(self.database_url)
+
+    def ping(self) -> None:
+        with self._connect() as conn:
+            conn.execute("SELECT 1 FROM a2a_agent_lifecycle LIMIT 0")
+
+    def _persist(self, rec: AgentLifecycleRecord) -> None:
+        from psycopg.types.json import Jsonb
+
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO a2a_agent_lifecycle (
+                      agent_id, state, last_seen, active_tasks, max_concurrency,
+                      load, version, capabilities, drain_started_at, updated_at, metadata
+                    ) VALUES (
+                      %s, %s, %s::timestamptz, %s, %s, %s, %s, %s, %s::timestamptz, now(), %s
+                    )
+                    ON CONFLICT (agent_id) DO UPDATE SET
+                      state = EXCLUDED.state,
+                      last_seen = EXCLUDED.last_seen,
+                      active_tasks = EXCLUDED.active_tasks,
+                      max_concurrency = EXCLUDED.max_concurrency,
+                      load = EXCLUDED.load,
+                      version = EXCLUDED.version,
+                      capabilities = EXCLUDED.capabilities,
+                      drain_started_at = EXCLUDED.drain_started_at,
+                      updated_at = now(),
+                      metadata = EXCLUDED.metadata
+                    """,
+                    (
+                        rec.agent_id,
+                        rec.state,
+                        rec.last_seen,
+                        rec.active_tasks,
+                        rec.max_concurrency,
+                        rec.load,
+                        rec.version,
+                        Jsonb(rec.capabilities or {}),
+                        rec.drain_started_at,
+                        Jsonb(rec.metadata or {}),
+                    ),
+                )
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "agent lifecycle persist failed agent=%s", rec.agent_id, exc_info=True
+            )
+
+    def _load(self, agent_id: str) -> Optional[AgentLifecycleRecord]:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM a2a_agent_lifecycle WHERE agent_id = %s",
+                    (agent_id,),
+                ).fetchone()
+            if not row:
+                return None
+            return _lifecycle_from_row(dict(row))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _list_persisted_ids(self) -> list[str]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute("SELECT agent_id FROM a2a_agent_lifecycle").fetchall()
+            return [str(r["agent_id"]) for r in rows]
+        except Exception:  # noqa: BLE001
+            return []
+
+
+def _lifecycle_from_row(row: dict[str, Any]) -> AgentLifecycleRecord:
+    def _ts(val: Any) -> Optional[str]:
+        if val is None:
+            return None
+        if hasattr(val, "isoformat"):
+            return val.isoformat()
+        return str(val)
+
+    return AgentLifecycleRecord(
+        agent_id=str(row["agent_id"]),
+        state=str(row.get("state") or AgentLifecycleState.REGISTERED.value),
+        last_seen=_ts(row.get("last_seen")),
+        active_tasks=int(row.get("active_tasks") or 0),
+        max_concurrency=int(row.get("max_concurrency") or 8),
+        load=float(row.get("load") or 0),
+        version=row.get("version"),
+        capabilities=dict(row.get("capabilities") or {}),
+        drain_started_at=_ts(row.get("drain_started_at")),
+        updated_at=_ts(row.get("updated_at")),
+        metadata=dict(row.get("metadata") or {}),
+    )
+
+
+__all__ = [
+    "AgentLifecycleService",
+    "PostgresAgentLifecycleService",
+    "AgentLifecycleRecord",
+    "IllegalTransition",
+]

@@ -139,6 +139,17 @@ class ExecutionRecordStore:
             rec = self._by_key.get((task_id, operation))
             return ExecutionRecord.from_row(rec.to_dict()) if rec else None
 
+    def get_many(
+        self, task_ids: list[str], *, operation: str = "execute"
+    ) -> dict[str, ExecutionRecord]:
+        out: dict[str, ExecutionRecord] = {}
+        with self._lock:
+            for tid in task_ids:
+                rec = self._by_key.get((str(tid), operation))
+                if rec:
+                    out[str(tid)] = ExecutionRecord.from_row(rec.to_dict())
+        return out
+
     def get_by_idempotency(self, key: str) -> Optional[ExecutionRecord]:
         with self._lock:
             rec = self._by_idemp.get(key)
@@ -384,6 +395,26 @@ class PostgresExecutionRecordStore:
                 (task_id, operation),
             ).fetchone()
         return ExecutionRecord.from_row(dict(row)) if row else None
+
+    def get_many(
+        self, task_ids: list[str], *, operation: str = "execute"
+    ) -> dict[str, ExecutionRecord]:
+        ids = [str(t) for t in task_ids if t]
+        if not ids:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM a2a_execution_records
+                WHERE operation = %s AND task_id = ANY(%s)
+                """,
+                (operation, ids),
+            ).fetchall()
+        return {
+            str(r["task_id"]): ExecutionRecord.from_row(dict(r))
+            for r in rows
+            if r.get("task_id")
+        }
 
     def get_by_idempotency(self, key: str) -> Optional[ExecutionRecord]:
         with self._connect() as conn:

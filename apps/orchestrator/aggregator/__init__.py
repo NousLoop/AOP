@@ -34,7 +34,7 @@ class Aggregator:
 
             nodes = conn.execute(
                 """
-                SELECT node_key, skill, status, output_json, error_message,
+                SELECT node_key, agent_key, status, output_json, error_message,
                        assigned_agent_id::text AS agent_id
                 FROM task_nodes
                 WHERE task_id = %s::uuid
@@ -65,7 +65,7 @@ class Aggregator:
                         reason = (handoff or {}).get("reason") or ""
                         art_ids = (handoff or {}).get("artifact_ids") or []
                         preview = truncate_text(str(text), 1200) if text else ""
-                        header = f"## {n['node_key']} ({n['skill']})"
+                        header = f"## {n['node_key']} ({n['agent_key']})"
                         if reason:
                             header += f"\nhandoff: {reason}"
                         if art_ids:
@@ -78,7 +78,7 @@ class Aggregator:
                 node_results.append(
                     {
                         "id": n["node_key"],
-                        "skill": n["skill"],
+                        "agent_key": n["agent_key"],
                         "status": n["status"],
                         "agent_id": n["agent_id"],
                         "output": out,

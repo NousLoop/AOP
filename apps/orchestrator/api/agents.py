@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app_context import ctx
 from execution.state_machine import IllegalTransition
+from pulse import beat_node, list_nodes
 
 router = APIRouter(tags=["agents"])
 
@@ -20,6 +22,15 @@ class AgentHeartbeatRequest(BaseModel):
     capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
+class NodeHeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str | None = None
+    client_version: str | None = None
+    node_id: str | None = None
+    children: list[Any] = Field(default_factory=list)
+
+
 @router.get("/v1/agents/{agent_id}/health")
 @router.get("/v1/agent-runtime/{agent_id}/health")
 def agent_health(agent_id: str) -> dict[str, Any]:
@@ -27,6 +38,22 @@ def agent_health(agent_id: str) -> dict[str, Any]:
     return ctx.agent_lifecycle.health(agent_id)
 
 
+@router.get("/v1/nodes")
+def list_edge_nodes() -> dict[str, Any]:
+    """Edge supervisors (aop-node). Not A2A agents."""
+    nodes = list_nodes()
+    return {"nodes": nodes, "count": len(nodes)}
+
+
+@router.post("/v1/nodes/{node_id}/heartbeat")
+def node_heartbeat(node_id: str, body: NodeHeartbeatRequest | None = None) -> dict[str, Any]:
+    body = body or NodeHeartbeatRequest()
+    payload = body.model_dump(exclude_none=True)
+    beat_node(node_id, json.dumps(payload, default=str))
+    return {"ok": True, "node_id": node_id, "kind": "node"}
+
+
+@router.post("/v1/agents/{agent_id}/heartbeat")
 @router.post("/v1/agent-runtime/{agent_id}/heartbeat")
 def agent_heartbeat(
     agent_id: str, body: AgentHeartbeatRequest | None = None

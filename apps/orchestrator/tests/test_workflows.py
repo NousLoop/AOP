@@ -14,13 +14,13 @@ def test_dag_to_plan_keeps_peer_approval(monkeypatch):
             "nodes": [
                 {
                     "id": "run",
-                    "skill": "deepseek-harness",
+                    "agent_key": "deepseek-harness",
                     "approval_mode": "agent",
                     "approver_agent": "claude-code",
                 },
                 {
-                    "id": "report",
-                    "skill": "pi",
+                    "id": "hop-d",
+                    "agent_key": "pi",
                     "depends_on": ["run"],
                     "approval_mode": "both",
                     "approver_agent": "claude-code",
@@ -33,16 +33,16 @@ def test_dag_to_plan_keeps_peer_approval(monkeypatch):
     by_id = {n.id: n for n in plan.nodes}
     assert by_id["run"].approval_mode == "agent"
     assert by_id["run"].approver_agent == "claude-code"
-    assert by_id["report"].approval_mode == "both"
-    assert by_id["report"].requires_approval is True
+    assert by_id["hop-d"].approval_mode == "both"
+    assert by_id["hop-d"].requires_approval is True
 
 
 def test_dag_to_plan_hitl_skill_still_system(monkeypatch):
-    monkeypatch.setattr("workflows.hitl_skills", lambda: {"report-generation"})
+    monkeypatch.setattr("workflows.hitl_skills", lambda: {"hermes"})
     svc = WorkflowService.__new__(WorkflowService)
     plan = WorkflowService._dag_to_plan(
         svc,
-        {"nodes": [{"id": "r", "skill": "report-generation"}]},
+        {"nodes": [{"id": "r", "agent_key": "hermes"}]},
         goal="g",
         title="t",
     )

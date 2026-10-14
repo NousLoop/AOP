@@ -54,8 +54,8 @@ class ExecutionConfig:
         store = (os.getenv("EXECUTION_STORE") or "postgres").strip().lower()
         if store not in {"postgres", "memory"}:
             store = "postgres"
-        # If explicitly asked for postgres but no URL, still prefer postgres class
-        # (callers catch connection errors and can fall back).
+        # Postgres is required in process unless EXECUTION_STORE=memory.
+        # factory.build_execution_service raises if postgres cannot be probed.
         owner = os.getenv("A2A_OWNER_ID") or os.getenv("HOSTNAME") or f"pid-{os.getpid()}"
         return cls(
             store=store,

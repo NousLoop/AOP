@@ -11,7 +11,6 @@ const NAV = [
   { href: "/", label: "Network", hint: "Live Agent Network" },
   { href: "/tasks", label: "Tasks", hint: "Tasks" },
   { href: "/agents", label: "Agents", hint: "Agents" },
-  { href: "/workflows", label: "Flows", hint: "Workflows" },
   { href: "/settings", label: "Settings", hint: "Settings" },
 ];
 

@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS task_nodes (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   task_id       UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   node_key      TEXT NOT NULL,
-  skill         TEXT NOT NULL,
+  agent_key     TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'pending',
   assigned_agent_id UUID REFERENCES agents(id),
   input_json    JSONB,

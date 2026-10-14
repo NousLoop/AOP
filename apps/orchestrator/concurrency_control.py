@@ -78,13 +78,13 @@ class ConcurrencyController:
             # Count by skill
             by_skill = conn.execute(
                 """
-                SELECT skill, COUNT(*) as count
+                SELECT agent_key, COUNT(*) as count
                 FROM task_nodes
                 WHERE status = 'running'
-                GROUP BY skill
+                GROUP BY agent_key
                 """,
             ).fetchall()
-            self.state.active_by_skill = {row["skill"]: row["count"] for row in by_skill}
+            self.state.active_by_skill = {row["agent_key"]: row["count"] for row in by_skill}
             
             # Count by task
             by_task = conn.execute(

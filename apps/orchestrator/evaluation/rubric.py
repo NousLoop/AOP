@@ -116,10 +116,6 @@ def _execution_score(status: str, success: int, total: int, failed: int) -> floa
 
 def _report_payload(nodes: list[dict[str, Any]]) -> dict[str, str] | None:
     for node in nodes:
-        skill = str(node.get("skill") or "")
-        key = str(node.get("node_key") or "")
-        if "report" not in skill and "report" not in key:
-            continue
         output = node.get("output_json") or {}
         if isinstance(output, str):
             try:
@@ -132,7 +128,7 @@ def _report_payload(nodes: list[dict[str, Any]]) -> dict[str, str] | None:
         files = data.get("files") if isinstance(data.get("files"), dict) else {}
         html = files.get("report.html")
         if not isinstance(html, str) or not html.strip():
-            html = str(output.get("text") or "")
+            continue
         goal = str(data.get("query") or "")
         return {"html": html, "goal": goal}
     return None

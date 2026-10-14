@@ -21,6 +21,8 @@ from .approvals import (
     parse_approval_decision,
 )
 from .events import apply_event, finalize_task, new_working_task, utc_now
+from .platform_role import enrich_system_prompt_for_agent
+from .runners._cli_common import apply_provider_balance_failure
 from .protocol import (
     HarnessEvent,
     HarnessEventType,
@@ -60,6 +62,9 @@ def load_agent_card(card_path: str | Path, *, agent_url: Optional[str] = None) -
     override = agent_url or os.getenv("AGENT_URL")
     if override:
         card["url"] = override if override.endswith("/") else f"{override}/"
+    display = (os.getenv("AGENT_DISPLAY_NAME") or "").strip()
+    if display:
+        card["name"] = display
     # Official-shaped defaults (a2aproject/A2A).
     card.setdefault("protocolVersion", "0.3.0")
     card.setdefault("preferredTransport", "JSONRPC")
@@ -99,8 +104,11 @@ def _skill_allowed(skill_id: str, card: dict[str, Any]) -> bool:
     skills = card.get("skills") or []
     if not skills:
         return True  # skill-less virtual agents accept any / no skillId
+    sid = (skill_id or "").strip()
+    if not sid or sid in {"peer-approval", "peer_approval"}:
+        return True
     allowed = {str(s.get("id")) for s in skills if s.get("id")}
-    return skill_id in allowed
+    return sid in allowed
 
 
 def _truthy_async_flag(value: Any) -> bool:
@@ -285,6 +293,17 @@ def create_harness_app(
                 current["status"]["state"] = "canceled"
             else:
                 current["status"] = {"state": "canceled"}
+        else:
+            result = apply_provider_balance_failure(result)
+            if result.status == HarnessStatus.FAILED and result.error:
+                await _on_event(
+                    HarnessEvent(
+                        type=HarnessEventType.ERROR,
+                        task_id=task_id,
+                        timestamp=utc_now(),
+                        payload={"error": result.error},
+                    )
+                )
 
         finalize_task(current, result)
         attach_usage(current, result.usage)
@@ -597,13 +616,19 @@ def create_harness_app(
             parent_task_id=lin.get("parent_task_id"),
         )
         task["metadata"]["agentId"] = agent_id
-        if sys_prompt:
-            task["metadata"]["systemPromptBytes"] = len(sys_prompt)
 
         run_message = dict(message)
         run_message.setdefault("metadata", {})
-        if isinstance(run_message["metadata"], dict) and sys_prompt:
-            run_message["metadata"]["systemPrompt"] = sys_prompt
+        effective_prompt = enrich_system_prompt_for_agent(
+            sys_prompt,
+            agent_id,
+            message=run_message if isinstance(run_message, dict) else None,
+            params=params,
+        )
+        if effective_prompt:
+            task["metadata"]["systemPromptBytes"] = len(effective_prompt)
+            if isinstance(run_message["metadata"], dict):
+                run_message["metadata"]["systemPrompt"] = effective_prompt
         return task_id, task, skill, run_message, idem
 
     def _spawn_background(

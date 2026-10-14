@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -90,6 +93,168 @@ class ExecutionEventBus:
         with self._lock:
             self._events.clear()
             self._seen_ids.clear()
+            self._root_seq.clear()
+
+
+class PostgresExecutionEventBus(ExecutionEventBus):
+    """Write-through event log. Queries Postgres so collaboration views survive restart."""
+
+    def __init__(self, database_url: str | None = None):
+        super().__init__()
+        from defaults import database_url as resolve_database_url
+
+        self.database_url = resolve_database_url(database_url)
+
+    def _connect(self):
+        from db import connect
+
+        return connect(self.database_url)
+
+    def ping(self) -> None:
+        with self._connect() as conn:
+            conn.execute("SELECT 1 FROM a2a_execution_events LIMIT 0")
+
+    def emit(self, event: ExecutionEvent | dict[str, Any]) -> ExecutionEvent:
+        if isinstance(event, dict):
+            event = ExecutionEvent(
+                **{k: v for k, v in event.items() if k in ExecutionEvent.__dataclass_fields__}
+            )
+        with self._lock:
+            if event.event_id in self._seen_ids:
+                for e in self._events:
+                    if e.event_id == event.event_id:
+                        return e
+            persisted = self._insert(event)
+            event.sequence = persisted.sequence
+            if "sequence" not in (event.payload or {}):
+                event.payload = {**(event.payload or {}), "sequence": event.sequence}
+            self._seen_ids.add(event.event_id)
+            self._events.append(event)
+        for hook in list(self._hooks):
+            try:
+                hook(event)
+            except Exception:  # noqa: BLE001
+                pass
+        return event
+
+    def _insert(self, event: ExecutionEvent) -> ExecutionEvent:
+        from psycopg.types.json import Jsonb
+
+        root = event.root_task_id or event.task_id
+        try:
+            with self._connect() as conn:
+                with conn.transaction():
+                    seq_row = conn.execute(
+                        """
+                        SELECT COALESCE(MAX(sequence), 0) + 1 AS seq
+                        FROM a2a_execution_events
+                        WHERE COALESCE(root_task_id, task_id, '') = %s
+                        """,
+                        (root or "",),
+                    ).fetchone()
+                    seq = int((seq_row or {}).get("seq") or 1)
+                    payload = dict(event.payload or {})
+                    payload["sequence"] = seq
+                    if event.parent_agent_id:
+                        payload.setdefault("parent_agent_id", event.parent_agent_id)
+                    if event.execution_id:
+                        payload.setdefault("execution_id", event.execution_id)
+                    row = conn.execute(
+                        """
+                        INSERT INTO a2a_execution_events (
+                          event_id, event_type, timestamp, root_task_id, correlation_id,
+                          task_id, agent_id, parent_task_id, payload, sequence
+                        ) VALUES (
+                          %s, %s, %s::timestamptz, %s, %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (event_id) DO NOTHING
+                        RETURNING *
+                        """,
+                        (
+                            event.event_id,
+                            event.event_type,
+                            event.timestamp,
+                            event.root_task_id,
+                            event.correlation_id,
+                            event.task_id,
+                            event.agent_id,
+                            event.parent_task_id,
+                            Jsonb(payload),
+                            seq,
+                        ),
+                    ).fetchone()
+                    if row is None:
+                        row = conn.execute(
+                            "SELECT * FROM a2a_execution_events WHERE event_id = %s",
+                            (event.event_id,),
+                        ).fetchone()
+            if row:
+                return _event_from_row(dict(row))
+        except Exception:  # noqa: BLE001
+            logger.warning("execution event persist failed id=%s", event.event_id, exc_info=True)
+        root_key = event.root_task_id or event.task_id or "_"
+        seq = self._root_seq.get(root_key, 0) + 1
+        self._root_seq[root_key] = seq
+        event.sequence = seq
+        return event
+
+    def list_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM a2a_execution_events
+                    WHERE task_id = %s
+                    ORDER BY COALESCE(sequence, id), id
+                    """,
+                    (task_id,),
+                ).fetchall()
+            if rows:
+                return [_event_from_row(dict(r)).to_dict() for r in rows]
+        except Exception:  # noqa: BLE001
+            pass
+        return super().list_for_task(task_id)
+
+    def list_for_root(self, root_task_id: str) -> list[dict[str, Any]]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM a2a_execution_events
+                    WHERE root_task_id = %s OR (root_task_id IS NULL AND task_id = %s)
+                    ORDER BY COALESCE(sequence, id), id
+                    """,
+                    (root_task_id, root_task_id),
+                ).fetchall()
+            return [_event_from_row(dict(r)).to_dict() for r in rows]
+        except Exception:  # noqa: BLE001
+            return super().list_for_root(root_task_id)
+
+
+def _event_from_row(row: dict[str, Any]) -> ExecutionEvent:
+    ts = row.get("timestamp")
+    if hasattr(ts, "isoformat"):
+        ts = ts.isoformat()
+    payload = row.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    seq = row.get("sequence")
+    if seq is not None:
+        payload.setdefault("sequence", int(seq))
+    return ExecutionEvent(
+        event_type=str(row.get("event_type") or ""),
+        event_id=str(row.get("event_id") or ""),
+        timestamp=str(ts or _utc_now()),
+        root_task_id=row.get("root_task_id"),
+        correlation_id=row.get("correlation_id"),
+        task_id=row.get("task_id"),
+        agent_id=row.get("agent_id"),
+        parent_task_id=row.get("parent_task_id"),
+        parent_agent_id=payload.get("parent_agent_id"),
+        execution_id=payload.get("execution_id"),
+        sequence=int(seq) if seq is not None else payload.get("sequence"),
+        payload=payload,
+    )
 
 
 # Canonical event type constants

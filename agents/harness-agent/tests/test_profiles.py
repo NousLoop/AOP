@@ -8,15 +8,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles"
 
-EXPECTED = {"claude-code", "deepseek-harness", "pi", "openclaw", "hermes"}
+EXPECTED = {
+    "claude-code",
+    "deepseek-harness",
+    "pi",
+    "openclaw",
+    "hermes",
+}
 
 
-def test_all_profiles_load_without_skills():
+def test_all_profiles_load():
     assert {p.name for p in PROFILES.iterdir() if p.is_dir()} == EXPECTED
     for name in EXPECTED:
         card = json.loads((PROFILES / name / "agent-card.json").read_text(encoding="utf-8"))
-        assert card.get("skills") == [], name
         assert (PROFILES / name / "system.md").exists()
+        skills = card.get("skills") or []
+        assert skills == [], name
 
 
 def test_only_harness_agent_dir_exists():

@@ -46,12 +46,12 @@ def _task(status="completed"):
 
 def _nodes(html: str | None):
     if html is None:
-        return [{"node_key": "search", "skill": "web-search", "status": "success", "output_json": {}}]
+        return [{"node_key": "hop-a", "agent_key": "claude-code", "status": "success", "output_json": {}}]
     return [
-        {"node_key": "search", "skill": "web-search", "status": "success", "output_json": {}},
+        {"node_key": "hop-a", "agent_key": "claude-code", "status": "success", "output_json": {}},
         {
-            "node_key": "report",
-            "skill": "report-generation",
+            "node_key": "hop-d",
+            "agent_key": "hermes",
             "status": "success",
             "output_json": {"data": {"query": GOAL, "files": {"report.html": html}}},
         },

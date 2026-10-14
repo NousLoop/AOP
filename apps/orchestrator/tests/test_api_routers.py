@@ -18,7 +18,14 @@ class _FakeTasks:
     def get(self, task_id, tenant_id=None):
         if task_id == "missing":
             return None
-        return {"id": task_id, "tenant_id": tenant_id or "00000000-0000-0000-0000-000000000001"}
+        return {
+            "id": task_id,
+            "status": "running",
+            "tenant_id": tenant_id or "00000000-0000-0000-0000-000000000001",
+        }
+
+    def requeue_incomplete(self, task_id):
+        return {"task_id": task_id, "jobs": [], "enqueued_nodes": ["run"]}
 
     def get_with_graph(self, task_id, tenant_id=None):
         return self.get(task_id, tenant_id=tenant_id)
@@ -134,7 +141,10 @@ class _FakeExecution:
         return {"execute": {"tenant_id": "00000000-0000-0000-0000-000000000001"}, "delegate": {}}
 
     def get(self, task_id):
-        return None
+        return SimpleNamespace(state="RUNNING", task_id=task_id)
+
+    def recover(self, task_id):
+        return {"action": "wait", "class": "RUNNING", "record": {"task_id": task_id}}
 
     @property
     def events(self):
@@ -268,6 +278,9 @@ def test_extracted_api_routers(monkeypatch):
             accepts_delegation=lambda agent_id: (True, "ok"),
             health=lambda agent_id: {"agent_id": agent_id, "status": "ready"},
             get=lambda agent_id: None,
+            heartbeat=lambda agent_id, **kw: SimpleNamespace(
+                to_dict=lambda: {"agent_id": agent_id, "state": "READY"}
+            ),
         ),
         capacity_queue=SimpleNamespace(depth=lambda agent_id: 0, cancel=lambda task_id: None),
         exec_cfg=SimpleNamespace(queue_enabled=True),
@@ -361,6 +374,15 @@ def test_extracted_api_routers(monkeypatch):
     assert r.status_code == 200
     assert r.json()["status"] == "ready"
 
+    r = client.post("/v1/nodes/node-local-1/heartbeat", json={"status": "online"})
+    assert r.status_code == 200
+    assert r.json()["kind"] == "node"
+    assert r.json()["node_id"] == "node-local-1"
+
+    r = client.post("/v1/agents/claude-code/heartbeat", json={})
+    assert r.status_code == 200
+    assert r.json()["agent_id"] == "claude-code"
+
     r = client.get("/v1/artifacts")
     assert r.status_code == 200
     assert r.json()["artifacts"] == []
@@ -382,3 +404,15 @@ def test_extracted_api_routers(monkeypatch):
 
     r = client.get("/v1/tasks/missing/package")
     assert r.status_code == 404
+
+    r = client.post("/v1/tasks/t1/recover", headers=ten)
+    assert r.status_code == 200
+    assert r.json()["enqueued_nodes"] == ["run"]
+    assert r.json()["action"] == "wait"
+
+    r = client.post(
+        "/v1/tasks/t1/recover",
+        headers={"X-Tenant-Id": "00000000-0000-0000-0000-000000000099"},
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "tenant_forbidden"

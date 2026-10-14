@@ -20,26 +20,47 @@ import {
   healthCheckAgent,
   heartbeatAgent,
   listAgents,
+  listTeammates,
   previewRouter,
   registerAgent,
+  updateAgentMeta,
   apiErrorMessage,
+  isWorkAgentKey,
   type Agent,
   type AgentCapacity,
   type AgentPerformance,
   type AgentReliability,
   type AgentRuntimeHealth,
+  type AuthUser,
 } from "@/lib/api";
 type Tab = "registry" | "routing";
 type ViewMode = "cards" | "list";
 
-/** Current harness products — plan node.skill is agent_key. */
-const HARNESS_AGENT_KEYS = [
+/** Plan hops are agent_key. Supervisors are not work agents. */
+const FALLBACK_AGENT_KEYS = [
   "claude-code",
   "deepseek-harness",
   "pi",
   "openclaw",
   "hermes",
 ] as const;
+
+const IDENTITY_OPTIONS = [
+  { value: "assistant", label: "助理" },
+  { value: "manager", label: "主管" },
+  { value: "employee", label: "员工" },
+  { value: "student", label: "学生" },
+  { value: "support", label: "客服" },
+] as const;
+
+function identityLabel(code?: string) {
+  const hit = IDENTITY_OPTIONS.find((o) => o.value === code);
+  return hit?.label || code || "助理";
+}
+
+function ownerLabel(a: Agent) {
+  return a.owner_display_name || a.owner_email || "未绑定";
+}
 
 const LIFE_COLOR: Record<string, string> = {
   REGISTERED: "text-mist-400",
@@ -56,6 +77,7 @@ export function AgentsPageView() {
   const [perf, setPerf] = useState<AgentPerformance[]>([]);
   const [routerSkill, setRouterSkill] = useState("claude-code");
   const [routerPreview, setRouterPreview] = useState<{
+    skill?: string;
     smart: boolean;
     selected: string | null;
     candidates: Array<{
@@ -80,6 +102,9 @@ export function AgentsPageView() {
   const [capNote, setCapNote] = useState<string | null>(null);
   const [relNote, setRelNote] = useState<string | null>(null);
   const [lifeError, setLifeError] = useState<string | null>(null);
+  const [teammates, setTeammates] = useState<AuthUser[]>([]);
+  const [editIdentity, setEditIdentity] = useState("assistant");
+  const [editOwnerId, setEditOwnerId] = useState("");
 
   useEffect(() => {
     if (!selected) {
@@ -91,13 +116,16 @@ export function AgentsPageView() {
       setLifeError(null);
       return;
     }
+    setEditIdentity(selected.identity || "assistant");
+    setEditOwnerId(selected.owner_user_id || "");
     let alive = true;
     const id = selected.agent_id;
     (async () => {
-      const [h, c, r] = await Promise.allSettled([
+      const [h, c, r, users] = await Promise.allSettled([
         getAgentRuntimeHealth(id),
         getAgentCapacity(id),
         getAgentReliability(id),
+        listTeammates(),
       ]);
       if (!alive) return;
       if (h.status === "fulfilled") {
@@ -121,6 +149,11 @@ export function AgentsPageView() {
         setReliability(null);
         setRelNote("可靠性数据暂不可用（Gateway 需代理 GET /v1/agents/{id}/reliability）");
       }
+      if (users.status === "fulfilled") {
+        setTeammates(users.value.users || []);
+      } else {
+        setTeammates([]);
+      }
     })();
     return () => {
       alive = false;
@@ -133,8 +166,13 @@ export function AgentsPageView() {
         listAgents(status ? { status } : undefined),
         getAgentStats(50).catch(() => ({ agents: [] as AgentPerformance[] })),
       ]);
-      setAgents(data.agents || []);
+      const next = data.agents || [];
+      setAgents(next);
       setPerf(stats.agents || []);
+      setSelected((prev) => {
+        if (!prev) return prev;
+        return next.find((a) => a.agent_id === prev.agent_id) || prev;
+      });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed");
@@ -150,9 +188,12 @@ export function AgentsPageView() {
   useEffect(() => {
     if (tab !== "routing") return;
     let alive = true;
+    setRouterPreview(null);
     previewRouter(routerSkill)
       .then((p) => {
-        if (alive) setRouterPreview(p);
+        if (!alive) return;
+        if (p.skill && p.skill !== routerSkill) return;
+        setRouterPreview(p);
       })
       .catch((err) => {
         if (alive) setError(err instanceof Error ? err.message : "router preview failed");
@@ -168,16 +209,29 @@ export function AgentsPageView() {
     return m;
   }, [perf]);
 
+  const workAgents = useMemo(
+    () => agents.filter((a) => isWorkAgentKey(a.agent_key)),
+    [agents],
+  );
+
+  const routerKeys = useMemo(() => {
+    const fromReg = Array.from(
+      new Set(workAgents.map((a) => a.agent_key).filter(Boolean)),
+    ).sort();
+    const keys = fromReg.length ? fromReg : [...FALLBACK_AGENT_KEYS];
+    return keys;
+  }, [workAgents]);
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return agents;
-    return agents.filter(
+    if (!needle) return workAgents;
+    return workAgents.filter(
       (a) =>
         a.name.toLowerCase().includes(needle) ||
         a.agent_key.toLowerCase().includes(needle) ||
         (a.skills || []).some((s) => s.toLowerCase().includes(needle)),
     );
-  }, [agents, q]);
+  }, [workAgents, q]);
 
   const chartData = useMemo(
     () =>
@@ -233,6 +287,24 @@ export function AgentsPageView() {
     }
   }
 
+  async function onSaveMeta() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await updateAgentMeta(selected.agent_id, {
+        identity: editIdentity,
+        owner_user_id: editOwnerId,
+      });
+      setSelected(updated);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "update meta failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const metricData = selected
     ? (() => {
         const p = perfById.get(selected.agent_id);
@@ -251,7 +323,7 @@ export function AgentsPageView() {
         <div>
           <h1 className="font-display text-3xl text-mist-100">Agent 注册中心</h1>
           <p className="mt-1 text-sm text-mist-400">
-            虚拟 Agent = harness 产品（claude-code / deepseek-harness / pi / openclaw / hermes）。注册表、智能路由与运行指标。
+            工作 Agent 走注册表（不含 aop-node 监督器）。Harness 由本机 aopd 拉起。
           </p>
         </div>
         <button
@@ -287,10 +359,10 @@ export function AgentsPageView() {
               Router Preview（按 agent_key）
             </div>
             <p className="mt-2 font-mono text-[10px] text-mist-400">
-              计划节点的 skill 字段即目标 agent_key，不再使用旧 specialty skill（如 web-research）。
+              计划 hop 字段是 agent_key（如 claude-code / hermes），不再使用 specialty catalog。
             </p>
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {HARNESS_AGENT_KEYS.map((key) => (
+              {routerKeys.map((key) => (
                 <button
                   key={key}
                   type="button"
@@ -325,7 +397,7 @@ export function AgentsPageView() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm text-mist-100">
-                      #{i + 1} {c.name}
+                      #{i + 1} {c.agent_key || c.name}
                     </span>
                     <span className="font-mono text-[11px] text-signal">
                       score {c.score.toFixed(3)}
@@ -418,7 +490,13 @@ export function AgentsPageView() {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-display text-xl text-mist-100">{a.name}</div>
-                      <div className="mt-1 font-mono text-[11px] text-mist-400">{a.agent_key}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-mist-400">
+                        <span>{a.agent_key}</span>
+                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-mist-200">
+                          {identityLabel(a.identity)}
+                        </span>
+                        <span className="text-mist-400">· {ownerLabel(a)}</span>
+                      </div>
                     </div>
                     <StatusPill status={a.status} />
                   </div>
@@ -472,7 +550,9 @@ export function AgentsPageView() {
                 >
                   <div>
                     <div className="font-display text-lg text-mist-100">{a.name}</div>
-                    <div className="font-mono text-[11px] text-mist-400">{a.agent_key}</div>
+                    <div className="font-mono text-[11px] text-mist-400">
+                      {a.agent_key} · {identityLabel(a.identity)} · {ownerLabel(a)}
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {(a.skills || []).map((s) => (
@@ -551,6 +631,61 @@ export function AgentsPageView() {
           </div>
           <StatusPill status={selected.status} />
           <p className="mt-3 text-sm text-mist-400">{selected.description || "无描述"}</p>
+
+          <div className="mt-4 rounded-2xl border border-white/10 bg-ink-900/50 p-3">
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-mist-400">
+              身份 / 所有者
+            </div>
+            <label className="mt-3 block font-mono text-[10px] text-mist-400" htmlFor="agent-identity">
+              身份
+            </label>
+            <select
+              id="agent-identity"
+              name="identity"
+              value={editIdentity}
+              onChange={(e) => setEditIdentity(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-white/10 bg-ink-950 px-2 py-1.5 font-mono text-xs text-mist-100"
+            >
+              {IDENTITY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <label className="mt-3 block font-mono text-[10px] text-mist-400" htmlFor="agent-owner">
+              所有者
+            </label>
+            <select
+              id="agent-owner"
+              name="owner_user_id"
+              value={editOwnerId}
+              onChange={(e) => setEditOwnerId(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-white/10 bg-ink-950 px-2 py-1.5 font-mono text-xs text-mist-100"
+            >
+              <option value="">未绑定</option>
+              {teammates.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.display_name || u.email} ({u.email})
+                </option>
+              ))}
+              {editOwnerId &&
+              !teammates.some((u) => u.id === editOwnerId) &&
+              selected.owner_email ? (
+                <option value={editOwnerId}>
+                  {selected.owner_display_name || selected.owner_email} ({selected.owner_email})
+                </option>
+              ) : null}
+            </select>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onSaveMeta}
+              className="mt-3 rounded-lg border border-signal/30 bg-signal/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-signal"
+            >
+              保存身份与所有者
+            </button>
+          </div>
+
           <div className="mt-4 font-mono text-[10px] uppercase tracking-[0.16em] text-mist-400">
             Agent key / skills
           </div>

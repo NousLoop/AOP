@@ -29,7 +29,7 @@ def _invoice():
                 "amount_usd": 0.04,
             },
             {
-                "description": "Agent runs · web-search × 3",
+                "description": "Agent runs · claude-code × 3",
                 "quantity": 3,
                 "unit_amount_usd": 0.005,
                 "amount_usd": 0.015,

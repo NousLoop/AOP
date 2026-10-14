@@ -35,7 +35,7 @@ class JobQueue:
         task_id: str,
         node_id: str,
         node_key: str,
-        skill: str,
+        agent_key: str,
         attempt: int = 1,
         priority: int = 100,
         exclude_agent_ids: list[str] | None = None,
@@ -59,7 +59,7 @@ class JobQueue:
                     "task_id": task_id,
                     "node_id": node_id,
                     "node_key": node_key,
-                    "skill": skill,
+                    "agent_key": agent_key,
                     "attempt": attempt,
                     "priority": priority,
                     "exclude_agent_ids": exclude_agent_ids or [],
@@ -74,7 +74,7 @@ class JobQueue:
             task_id=task_id,
             node_id=node_id,
             node_key=node_key,
-            skill=skill,
+            agent_key=agent_key,
             attempt=attempt,
             priority=priority,
             exclude_agent_ids=exclude_agent_ids,
@@ -86,7 +86,7 @@ class JobQueue:
         
         Args:
             jobs: List of job dictionaries with keys:
-                  task_id, node_id, node_key, skill, attempt, 
+                  task_id, node_id, node_key, agent_key, attempt, 
                   exclude_agent_ids, delay_seconds
         
         Returns:
@@ -98,7 +98,7 @@ class JobQueue:
                 task_id=job["task_id"],
                 node_id=job["node_id"],
                 node_key=job["node_key"],
-                skill=job["skill"],
+                agent_key=job["agent_key"],
                 attempt=job.get("attempt", 1),
                 exclude_agent_ids=job.get("exclude_agent_ids"),
                 delay_seconds=job.get("delay_seconds", 0),

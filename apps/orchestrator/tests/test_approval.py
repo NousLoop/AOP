@@ -7,7 +7,7 @@ from planner.dag import PlanNode, TaskPlan
 
 
 def test_requires_approval_is_system_gate():
-    p = policy_from_plan_node(PlanNode(id="r", skill="report-generation", requires_approval=True))
+    p = policy_from_plan_node(PlanNode(id="r", agent_key="hermes", requires_approval=True))
     assert p.mode == "system"
     assert p.needs_system is True
     assert p.needs_agent is False
@@ -15,7 +15,7 @@ def test_requires_approval_is_system_gate():
 
 
 def test_none_by_default():
-    p = policy_from_plan_node(PlanNode(id="a", skill="claude-code"))
+    p = policy_from_plan_node(PlanNode(id="a", agent_key="claude-code"))
     assert p.mode == "none"
     assert p.needs_gate is False
 
@@ -24,7 +24,7 @@ def test_agent_mode_needs_named_peer():
     p = policy_from_plan_node(
         PlanNode(
             id="run",
-            skill="deepseek-harness",
+            agent_key="deepseek-harness",
             approval_mode="agent",
             approver_agent="claude-code",
         )
@@ -36,13 +36,13 @@ def test_agent_mode_needs_named_peer():
 
 
 def test_agent_mode_without_approver_falls_back_to_system():
-    p = policy_from_plan_node(PlanNode(id="run", skill="pi", approval_mode="agent"))
+    p = policy_from_plan_node(PlanNode(id="run", agent_key="pi", approval_mode="agent"))
     assert p.mode == "system"
 
 
 def test_runtime_agent_signal_upgrades_system_to_both():
     plan = policy_from_plan_node(
-        PlanNode(id="r", skill="report-generation", requires_approval=True)
+        PlanNode(id="r", agent_key="hermes", requires_approval=True)
     )
     runtime = parse_runtime_signal(
         {"hitl": {"mode": "agent", "approver_agent": "pi", "reason": "peer review"}}
@@ -55,7 +55,7 @@ def test_runtime_agent_signal_upgrades_system_to_both():
 
 def test_runtime_signal_alone_is_agent_gate():
     p = resolve_for_node(
-        plan_node=PlanNode(id="a", skill="deepseek-harness"),
+        plan_node=PlanNode(id="a", agent_key="deepseek-harness"),
         output={"hitl": {"approver_agent": "claude-code", "reason": "needs review"}},
     )
     assert p.mode == "agent"
@@ -66,7 +66,7 @@ def test_apply_system_then_agent_clears_both_gate():
     p = resolve_for_node(
         plan_node=PlanNode(
             id="r",
-            skill="report-generation",
+            agent_key="hermes",
             approval_mode="both",
             approver_agent="pi",
         ),
@@ -88,7 +88,7 @@ def test_plan_roundtrip_keeps_approval_fields():
         nodes=[
             PlanNode(
                 id="a",
-                skill="deepseek-harness",
+                agent_key="deepseek-harness",
                 approval_mode="agent",
                 approver_agent="claude-code",
             )

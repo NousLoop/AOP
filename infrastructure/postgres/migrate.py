@@ -38,15 +38,23 @@ def _checksum(text: str) -> str:
 
 
 def split_sql(script: str) -> list[str]:
-    """Split init/*.sql into statements (no PL/pgSQL bodies in our migrations)."""
+    """Split init/*.sql into statements, keeping $$ ... $$ bodies intact."""
     parts: list[str] = []
     buf: list[str] = []
+    in_dollar = False
     for line in script.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
+        if not in_dollar and (not stripped or stripped.startswith("--")):
             continue
         buf.append(line)
-        if stripped.endswith(";"):
+        idx = 0
+        while True:
+            found = stripped.find("$$", idx)
+            if found < 0:
+                break
+            in_dollar = not in_dollar
+            idx = found + 2
+        if not in_dollar and stripped.endswith(";"):
             stmt = "\n".join(buf).strip()
             if stmt:
                 parts.append(stmt)

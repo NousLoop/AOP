@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
-
 from defaults import DEFAULT_TENANT_ID, database_url as resolve_database_url
 from db import connect
+from planner import is_work_agent
 from pulse import TTL_S, read_pulses
 
 HINT_DEV_UP = "python scripts/dev_up.py"
@@ -85,13 +84,13 @@ def _postgres_snapshot() -> dict[str, Any]:
 
 def _redis_snapshot() -> dict[str, Any]:
     try:
-        from streams import StreamClient
+        from pulse import _redis
 
-        client = StreamClient()
-        pulses = read_pulses(client.r)
+        r = _redis()
+        pulses = read_pulses(r)
         queued = 0
         try:
-            queued = int(client.r.xlen("a2a.execution.queue") or 0)
+            queued = int(r.xlen("a2a.execution.queue") or 0)
         except Exception:  # noqa: BLE001
             queued = 0
         return _svc(True, queued=queued, **pulses)
@@ -100,6 +99,8 @@ def _redis_snapshot() -> dict[str, Any]:
             False,
             worker_ok=False,
             outbox_ok=False,
+            node_ok=False,
+            nodes=[],
             detail=str(exc),
             hint="Start Redis: docker compose -f deployments/docker-compose.yml up -d redis",
         )
@@ -120,12 +121,12 @@ def _list_registered_agents() -> list[dict[str, Any]]:
     try:
         with connect(resolve_database_url()) as conn:
             rows = conn.execute(sql, (DEFAULT_TENANT_ID,)).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows if is_work_agent(str(r.get("agent_key") or ""))]
     except Exception:  # noqa: BLE001
         return []
 
 
-def probe_agent_health(endpoint: str, *, timeout_s: float = 1.5) -> dict[str, Any]:
+def probe_agent_health(endpoint: str, *, timeout_s: float = 0.4) -> dict[str, Any]:
     """Read-only /health — does not mutate registry status."""
     if not endpoint:
         return {
@@ -135,14 +136,19 @@ def probe_agent_health(endpoint: str, *, timeout_s: float = 1.5) -> dict[str, An
         }
     url = endpoint.rstrip("/") + "/health"
     try:
-        r = httpx.get(url, timeout=timeout_s, follow_redirects=True)
-        if r.status_code >= 400:
+        import json
+        import urllib.request
+
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+            raw = resp.read()
+            status = getattr(resp, "status", 200)
+        if status >= 400:
             return {
                 "reachable": False,
                 "runner_ready": False,
-                "runner_reason": f"health HTTP {r.status_code}",
+                "runner_reason": f"health HTTP {status}",
             }
-        data = r.json() if r.content else {}
+        data = json.loads(raw.decode("utf-8", errors="replace")) if raw else {}
         if not isinstance(data, dict):
             return {"reachable": True, "runner_ready": True, "runner_reason": None}
         if "runner_ready" in data:
@@ -207,12 +213,16 @@ def classify(
 
     ready_agents = [a for a in agents if a.get("runner_ready")]
     reachable = [a for a in agents if a.get("reachable")]
+    node_ok = bool(services.get("aop_node", {}).get("ok"))
     if not agents:
         warnings.append("no_agents")
-        hints.append("没有已注册 Agent。用 aop-node 或 python scripts/start_and_register_agents.py")
+        hints.append("没有已注册 Agent。启动 aopd（python scripts/dev_up.py）或 POST /v1/agents/register")
     elif not ready_agents:
         warnings.append("no_runner_ready")
-        hints.append("没有 runner_ready 的 Agent（缺 CLI / API Key 时会降级）")
+        hints.append(
+            "没有 runner_ready 的 Agent。用 aopd 拉起 harness 子进程："
+            "POST http://127.0.0.1:7920/v1/agents/<agent_key>/start，并确认 CLI/密钥可用"
+        )
     else:
         skipped = [a for a in agents if a.get("reachable") and not a.get("runner_ready")]
         if skipped:
@@ -239,6 +249,7 @@ def classify(
         "ready_agents": len(ready_agents),
         "reachable_agents": len(reachable),
         "registered_agents": len(agents),
+        "hosted_ready": node_ok or bool(ready_agents),
         "waiting_hitl": waiting,
         "waiting_agent": waiting_agent,
         "stuck_running": stuck,
@@ -280,6 +291,13 @@ def recover_steps(*, blocking: list[str], warnings: list[str]) -> list[dict[str,
             "console": "打开 Tasks 或 Network，点 Retry / Recover；或 Cancel 后再跑。",
         },
         {
+            "id": "aopd",
+            "title": "aopd / harness 没起来",
+            "symptom": "预检 no_runner_ready，或 Agents 全是 stub/offline",
+            "fix": "python scripts/dev_up.py（默认拉 aopd :7920）。仅排障用 --legacy-agents。",
+            "console": "确认 aop-node :7920 绿，再 POST /v1/agents/<key>/start 或刷新 Agents。",
+        },
+        {
             "id": "control_plane",
             "title": "Gateway 连不上",
             "symptom": "顶栏提示连不上控制面 :8080",
@@ -293,6 +311,7 @@ def recover_steps(*, blocking: list[str], warnings: list[str]) -> list[dict[str,
             sid in block
             or (sid == "stuck_running" and "stuck_running" in warn)
             or (sid == "outbox" and "outbox_lag" in warn)
+            or (sid == "aopd" and "no_runner_ready" in warn)
         )
     return steps
 
@@ -314,6 +333,12 @@ def collect_preflight(*, probe_agents: bool = True) -> dict[str, Any]:
         ttl_s=TTL_S,
         hint=None if rd.get("outbox_ok") else "no heartbeat",
     )
+    nodes = rd.get("nodes") or []
+    edge = _svc(
+        bool(rd.get("ok") and rd.get("node_ok")),
+        nodes=nodes,
+        hint=None if rd.get("node_ok") else "no aop-node heartbeat (optional if using legacy uvicorn)",
+    )
     services = {
         "orchestrator": _svc(True, service="orchestrator"),
         "postgres": pg,
@@ -325,21 +350,30 @@ def collect_preflight(*, probe_agents: bool = True) -> dict[str, Any]:
         ),
         "worker": worker,
         "outbox": outbox,
+        "aop_node": edge,
     }
 
     agents: list[dict[str, Any]] = []
     if probe_agents:
-        for row in _list_registered_agents():
+        rows = _list_registered_agents()
+
+        def _probe_row(row: dict[str, Any]) -> dict[str, Any]:
             probe = probe_agent_health(row.get("endpoint") or "")
-            agents.append(
-                {
-                    "agent_key": row.get("agent_key"),
-                    "name": row.get("name"),
-                    "registry_status": row.get("status"),
-                    "endpoint": row.get("endpoint"),
-                    **probe,
-                }
-            )
+            return {
+                "agent_key": row.get("agent_key"),
+                "name": row.get("name"),
+                "registry_status": row.get("status"),
+                "endpoint": row.get("endpoint"),
+                **probe,
+            }
+
+        if len(rows) <= 1:
+            agents = [_probe_row(r) for r in rows]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=min(16, len(rows))) as pool:
+                agents = list(pool.map(_probe_row, rows))
 
     verdict = classify(services, agents)
     return {

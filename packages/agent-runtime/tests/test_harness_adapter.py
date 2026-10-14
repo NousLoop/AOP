@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_runtime.harness.adapter import create_harness_app
+from agent_runtime.harness.adapter import create_harness_app, load_agent_card
 from agent_runtime.harness.protocol import (
     HarnessEvent,
     HarnessEventType,
@@ -264,6 +264,51 @@ def test_failed_runner(monkeypatch):
     assert result["status"]["state"] == "failed"
 
 
+def test_402_balance_is_failed_not_completed(monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    class BalanceRunner:
+        async def run(self, *, task_id, message, skill_id, on_event):
+            return HarnessResult(
+                text=(
+                    "API Error: 402 Insufficient Balance "
+                    "(request_id: 670a32dc-9fa9-4c26-a062-d51e47f65db4)"
+                ),
+                status=HarnessStatus.OK,
+                skill_id=skill_id,
+            )
+
+        async def cancel(self, task_id: str) -> bool:
+            return False
+
+    monkeypatch.delenv("A2A_OS_URL", raising=False)
+    monkeypatch.delenv("GATEWAY_URL", raising=False)
+    app = create_harness_app(
+        agent_id="mock-402",
+        runner=BalanceRunner(),
+        card=CARD,
+        enable_heartbeat=False,
+    )
+    tc = TestClient(app)
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "message/send",
+        "params": {
+            "message": {"role": "user", "parts": [{"type": "text", "text": "x"}]},
+            "metadata": {"skillId": "code-assist"},
+        },
+    }
+    result = tc.post("/", json=body).json()["result"]
+    assert result["status"]["state"] == "failed"
+    msg = ((result.get("status") or {}).get("message") or {})
+    parts = msg.get("parts") or []
+    texts = " ".join(str(p.get("text") or "") for p in parts)
+    assert "余额不足" in texts
+    assert result["metadata"]["harnessStatus"] == "failed"
+
+
 def test_message_stream_sse(client):
     tc, runner = client
     body = {
@@ -293,3 +338,15 @@ def test_message_stream_sse(client):
     }
     parts = tc.post("/", json=send).json()["result"]["artifacts"][0]["parts"]
     assert parts[0].get("kind") == "text"
+
+
+def test_load_agent_card_display_name(tmp_path, monkeypatch):
+    card_path = tmp_path / "agent-card.json"
+    card_path.write_text(
+        '{"name":"Claude Code","url":"http://127.0.0.1:8011/","version":"0.1.0"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_DISPLAY_NAME", "aopd Claude Code")
+    monkeypatch.delenv("AGENT_URL", raising=False)
+    card = load_agent_card(card_path)
+    assert card["name"] == "aopd Claude Code"

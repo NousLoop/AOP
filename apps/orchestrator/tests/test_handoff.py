@@ -16,16 +16,16 @@ from handoff import (
 
 def test_build_and_parse_handoff_roundtrip():
     h = build_handoff(
-        from_node="search",
-        to_nodes=["report"],
+        from_node="hop-a",
+        to_nodes=["hop-d"],
         reason="search done; unlock report",
         artifact_ids=["s3://bucket/tasks/t/search/output.md"],
         confidence=0.9,
-        skill="web-search",
+        agent_key="claude-code",
         agent_id="agent-1",
     )
-    assert h["from"] == "search"
-    assert h["to"] == ["report"]
+    assert h["from"] == "hop-a"
+    assert h["to"] == ["hop-d"]
     assert h["artifact_ids"][0].endswith("output.md")
     parsed = parse_handoff(h)
     assert parsed is not None
@@ -42,37 +42,37 @@ def test_parse_handoff_rejects_invalid():
 def test_plan_dependents_and_dependencies():
     plan = {
         "nodes": [
-            {"id": "search", "skill": "web-search"},
-            {"id": "rag", "skill": "knowledge-search"},
-            {"id": "report", "skill": "report-generation", "depends_on": ["search", "rag"]},
+            {"id": "hop-a", "agent_key": "claude-code"},
+            {"id": "hop-b", "agent_key": "deepseek-harness"},
+            {"id": "hop-d", "agent_key": "hermes", "depends_on": ["hop-a", "hop-b"]},
         ]
     }
-    assert plan_dependents(plan, "search") == ["report"]
-    assert plan_dependents(plan, "rag") == ["report"]
-    assert plan_dependents(plan, "report") == []
-    assert set(plan_dependencies(plan, "report")) == {"search", "rag"}
-    assert plan_dependencies(plan, "search") == []
+    assert plan_dependents(plan, "hop-a") == ["hop-d"]
+    assert plan_dependents(plan, "hop-b") == ["hop-d"]
+    assert plan_dependents(plan, "hop-d") == []
+    assert set(plan_dependencies(plan, "hop-d")) == {"hop-a", "hop-b"}
+    assert plan_dependencies(plan, "hop-a") == []
 
 
 def test_select_upstream_nodes_filters_by_depends_on():
     plan = {
         "nodes": [
-            {"id": "search", "skill": "web-search"},
-            {"id": "rag", "skill": "knowledge-search"},
-            {"id": "analysis", "skill": "business-analysis"},
-            {"id": "report", "skill": "report-generation", "depends_on": ["search", "rag"]},
+            {"id": "hop-a", "agent_key": "claude-code"},
+            {"id": "hop-b", "agent_key": "deepseek-harness"},
+            {"id": "hop-c", "agent_key": "pi"},
+            {"id": "hop-d", "agent_key": "hermes", "depends_on": ["hop-a", "hop-b"]},
         ]
     }
     nodes = [
-        {"id": "search", "status": "success", "skill": "web-search"},
-        {"id": "rag", "status": "success", "skill": "knowledge-search"},
-        {"id": "analysis", "status": "success", "skill": "business-analysis"},
-        {"id": "report", "status": "ready", "skill": "report-generation"},
+        {"id": "hop-a", "status": "success", "agent_key": "claude-code"},
+        {"id": "hop-b", "status": "success", "agent_key": "deepseek-harness"},
+        {"id": "hop-c", "status": "success", "agent_key": "pi"},
+        {"id": "hop-d", "status": "ready", "agent_key": "hermes"},
     ]
-    up = select_upstream_nodes(nodes=nodes, current_node_key="report", plan_json=plan)
-    assert {n["id"] for n in up} == {"search", "rag"}
+    up = select_upstream_nodes(nodes=nodes, current_node_key="hop-d", plan_json=plan)
+    assert {n["id"] for n in up} == {"hop-a", "hop-b"}
     # root node: no upstream
-    assert select_upstream_nodes(nodes=nodes, current_node_key="search", plan_json=plan) == []
+    assert select_upstream_nodes(nodes=nodes, current_node_key="hop-a", plan_json=plan) == []
 
 
 def test_artifact_uris_skip_meta():
@@ -103,8 +103,8 @@ def test_prune_upstream_slices_respects_total_budget():
     long_b = "B" * 5000
     slices = [
         {
-            "node_key": "search",
-            "skill": "web-search",
+            "node_key": "hop-a",
+            "agent_key": "claude-code",
             "reason": "search done",
             "confidence": 0.9,
             "artifact_ids": ["s3://b/t/search/output.md"],
@@ -112,8 +112,8 @@ def test_prune_upstream_slices_respects_total_budget():
             "human": "",
         },
         {
-            "node_key": "rag",
-            "skill": "knowledge-search",
+            "node_key": "hop-b",
+            "agent_key": "deepseek-harness",
             "reason": "rag done",
             "confidence": 0.4,
             "artifact_ids": ["s3://b/t/rag/output.md"],
@@ -124,8 +124,8 @@ def test_prune_upstream_slices_respects_total_budget():
     pruned = prune_upstream_slices(slices, total_budget=2000, per_cap=1500)
     assert len(pruned) == 2
     # Original order preserved
-    assert pruned[0]["node_key"] == "search"
-    assert pruned[1]["node_key"] == "rag"
+    assert pruned[0]["node_key"] == "hop-a"
+    assert pruned[1]["node_key"] == "hop-b"
     total_body = sum(len(s["body"]) for s in pruned)
     assert total_body < len(long_a) + len(long_b)
     assert any(s.get("pruned") for s in pruned)
@@ -136,7 +136,7 @@ def test_prune_prefers_high_confidence_when_budget_tight():
     slices = [
         {
             "node_key": "low",
-            "skill": "x",
+            "agent_key": "x",
             "confidence": 0.1,
             "artifact_ids": [],
             "body": "L" * 3000,
@@ -145,7 +145,7 @@ def test_prune_prefers_high_confidence_when_budget_tight():
         },
         {
             "node_key": "high",
-            "skill": "y",
+            "agent_key": "y",
             "confidence": 0.99,
             "artifact_ids": ["s3://b/high.txt"],
             "body": "H" * 3000,
@@ -168,24 +168,24 @@ def test_compose_query_prefers_handoff_artifacts():
             return {
                 "plan_json": {
                     "nodes": [
-                        {"id": "search", "skill": "web-search"},
-                        {"id": "report", "skill": "report-generation", "depends_on": ["search"]},
+                        {"id": "hop-a", "agent_key": "claude-code"},
+                        {"id": "hop-d", "agent_key": "hermes", "depends_on": ["hop-a"]},
                     ]
                 },
                 "nodes": [
-                    {"id": "search", "status": "success", "skill": "web-search"},
-                    {"id": "report", "status": "ready", "skill": "report-generation"},
+                    {"id": "hop-a", "status": "success", "agent_key": "claude-code"},
+                    {"id": "hop-d", "status": "ready", "agent_key": "hermes"},
                 ],
             }
 
         def get_node(self, task_id, node_key):
-            if node_key == "search":
+            if node_key == "hop-a":
                 return {
                     "output_json": {
                         "text": "INLINE SHOULD NOT WIN",
                         "handoff": {
-                            "from": "search",
-                            "to": ["report"],
+                            "from": "hop-a",
+                            "to": ["hop-d"],
                             "reason": "search done; unlock report",
                             "artifact_ids": ["s3://b/t/search/output.md"],
                             "confidence": 0.9,
@@ -211,11 +211,11 @@ def test_compose_query_prefers_handoff_artifacts():
     eng.artifacts = FakeArtifacts()
     eng.memory = FakeMemory()
 
-    q = eng._compose_query("task-1", "report", "research AI")
+    q = eng._compose_query("task-1", "hop-d", "research AI")
     assert "FROM_HANDOFF_ARTIFACT" in q
     assert "INLINE SHOULD NOT WIN" not in q
     assert "handoff: search done; unlock report" in q
-    assert "### search" in q
+    assert "### hop-a" in q
 
 
 def test_compose_query_injects_hitl_human_input():
@@ -226,18 +226,18 @@ def test_compose_query_injects_hitl_human_input():
             return {
                 "plan_json": {
                     "nodes": [
-                        {"id": "report", "skill": "report-generation"},
-                        {"id": "publish", "skill": "web-search", "depends_on": ["report"]},
+                        {"id": "hop-d", "agent_key": "hermes"},
+                        {"id": "hop-e", "agent_key": "claude-code", "depends_on": ["hop-d"]},
                     ]
                 },
                 "nodes": [
-                    {"id": "report", "status": "success", "skill": "report-generation"},
-                    {"id": "publish", "status": "ready", "skill": "web-search"},
+                    {"id": "hop-d", "status": "success", "agent_key": "hermes"},
+                    {"id": "hop-e", "status": "ready", "agent_key": "claude-code"},
                 ],
             }
 
         def get_node(self, task_id, node_key):
-            if node_key == "report":
+            if node_key == "hop-d":
                 return {
                     "output_json": {
                         "text": "draft report",
@@ -263,7 +263,7 @@ def test_compose_query_injects_hitl_human_input():
     eng.artifacts = FakeArtifacts()
     eng.memory = FakeMemory()
 
-    q = eng._compose_query("task-1", "publish", "research AI")
-    assert "Human guidance (from report)" in q
+    q = eng._compose_query("task-1", "hop-e", "research AI")
+    assert "Human guidance (from hop-d)" in q
     assert "请强调竞品对比与定价" in q
     assert "draft report" in q

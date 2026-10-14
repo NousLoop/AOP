@@ -69,7 +69,7 @@ def build_citations(
     for n in nodes:
         if not isinstance(n, dict):
             continue
-        key = str(n.get("agent_key") or n.get("skill") or "").strip()
+        key = str(n.get("agent_key") or n.get("agent_key") or "").strip()
         if not key or key in seen:
             continue
         seen.add(key)

@@ -25,6 +25,8 @@ class HarnessProfile:
     description: str
     tags: tuple[str, ...] = ()
     env_url_key: str = ""
+    skills: tuple[str, ...] = ()
+    plugin_id: str = ""
 
     @property
     def package_id(self) -> str:
@@ -83,10 +85,68 @@ HARNESS_PROFILES: tuple[HarnessProfile, ...] = (
     ),
 )
 
+# Same five products under aopd, distinct ports + card names → distinct agent_key.
+AOPD_HARNESS_PROFILES: tuple[HarnessProfile, ...] = (
+    HarnessProfile(
+        key="aopd-claude-code",
+        port=8021,
+        runner="claude_cli",
+        name="aopd Claude Code",
+        description="Claude Code harness supervised by aopd",
+        tags=("harness", "claude", "aopd"),
+        env_url_key="AOP_AGENT_AOPD_CLAUDE_CODE_URL",
+        plugin_id="claude-code",
+    ),
+    HarnessProfile(
+        key="aopd-deepseek-harness",
+        port=8022,
+        runner="deepseek",
+        name="aopd DeepSeek Harness",
+        description="DeepSeek Harness supervised by aopd",
+        tags=("harness", "deepseek", "aopd"),
+        env_url_key="AOP_AGENT_AOPD_DEEPSEEK_HARNESS_URL",
+        plugin_id="deepseek-harness",
+    ),
+    HarnessProfile(
+        key="aopd-pi",
+        port=8023,
+        runner="pi_cli",
+        name="aopd Pi",
+        description="Pi harness supervised by aopd",
+        tags=("harness", "pi", "aopd"),
+        env_url_key="AOP_AGENT_AOPD_PI_URL",
+        plugin_id="pi",
+    ),
+    HarnessProfile(
+        key="aopd-openclaw",
+        port=8024,
+        runner="openclaw",
+        name="aopd OpenClaw",
+        description="OpenClaw harness supervised by aopd",
+        tags=("harness", "openclaw", "aopd"),
+        env_url_key="AOP_AGENT_AOPD_OPENCLAW_URL",
+        plugin_id="openclaw",
+    ),
+    HarnessProfile(
+        key="aopd-hermes",
+        port=8025,
+        runner="hermes",
+        name="aopd Hermes",
+        description="Hermes harness supervised by aopd",
+        tags=("harness", "hermes", "aopd"),
+        env_url_key="AOP_AGENT_AOPD_HERMES_URL",
+        plugin_id="hermes",
+    ),
+)
+
+
+def all_profiles() -> tuple[HarnessProfile, ...]:
+    return HARNESS_PROFILES + AOPD_HARNESS_PROFILES
+
 
 def profile_by_key(key: str) -> HarnessProfile | None:
     k = (key or "").strip().lower()
-    for p in HARNESS_PROFILES:
+    for p in all_profiles():
         if p.key == k:
             return p
     return None
@@ -96,15 +156,24 @@ def default_ports() -> dict[str, int]:
     return {p.key: p.port for p in HARNESS_PROFILES}
 
 
+def aopd_plugin_ports() -> dict[str, int]:
+    """aop-node plugin folder id → listen port."""
+    return {(p.plugin_id or p.key): p.port for p in AOPD_HARNESS_PROFILES}
+
+
 def host_port_map() -> dict[str, int]:
     """Docker service host names → local ports (plus harness-agent alias)."""
-    m = default_ports()
+    m = {p.key: p.port for p in all_profiles()}
     m["harness-agent"] = 8011
     return m
 
 
 def as_port_tuples() -> list[tuple[str, int]]:
     return [(p.key, p.port) for p in HARNESS_PROFILES]
+
+
+def as_aopd_plugin_port_tuples() -> list[tuple[str, int]]:
+    return [((p.plugin_id or p.key), p.port) for p in AOPD_HARNESS_PROFILES]
 
 
 def marketplace_catalog_rows(
@@ -129,7 +198,7 @@ def marketplace_catalog_rows(
                 "description": p.description,
                 "publisher": "AOP Official",
                 "version": "0.1.0",
-                "skills": [],
+                "skills": list(p.skills),
                 "default_endpoint": _ep(p.env_url_key, p.default_endpoint),
                 "agent_key": p.key,
                 "tags": list(p.tags),
@@ -141,9 +210,13 @@ def marketplace_catalog_rows(
 __all__ = [
     "HarnessProfile",
     "HARNESS_PROFILES",
+    "AOPD_HARNESS_PROFILES",
+    "all_profiles",
     "profile_by_key",
     "default_ports",
+    "aopd_plugin_ports",
     "host_port_map",
     "as_port_tuples",
+    "as_aopd_plugin_port_tuples",
     "marketplace_catalog_rows",
 ]

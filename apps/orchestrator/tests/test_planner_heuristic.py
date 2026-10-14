@@ -13,6 +13,7 @@ from planner import (
     RegisteredAgent,
     agent_instruction,
     extract_work_goal,
+    probe_keys_ready,
     requested_agent,
     wants_all_agents,
 )
@@ -71,12 +72,32 @@ def test_any_goal_goes_to_default_agent(planner: Planner):
     assert result.method == "heuristic"
     assert len(result.plan.nodes) == 1
     assert result.plan.nodes[0].id == "run"
-    assert result.plan.nodes[0].skill == "claude-code"
+    assert result.plan.nodes[0].agent_key == "claude-code"
 
 
 def test_code_goal_also_default(planner: Planner):
     result = _plan(planner, "帮我写一个 python 函数实现快速排序")
-    assert result.plan.nodes[0].skill == "claude-code"
+    assert result.plan.nodes[0].agent_key == "claude-code"
+
+
+def test_default_uses_ready_when_cli_not_ready(planner: Planner):
+    result = _plan(
+        planner,
+        "写一份简报",
+        agents={"claude-code", "hermes"},
+        ready={"hermes"},
+    )
+    assert result.plan.nodes[0].agent_key == "hermes"
+
+
+def test_named_cli_still_used_when_not_ready(planner: Planner):
+    result = _plan(
+        planner,
+        "用 claude-code 写一份简报",
+        agents={"claude-code", "hermes"},
+        ready={"hermes"},
+    )
+    assert result.plan.nodes[0].agent_key == "claude-code"
 
 
 def test_requested_agent_pi_chinese_preamble():
@@ -113,7 +134,7 @@ def test_named_pi_routes_to_pi(planner: Planner):
     )
     assert result.method == "heuristic"
     assert len(result.plan.nodes) == 1
-    assert result.plan.nodes[0].skill == "pi"
+    assert result.plan.nodes[0].agent_key == "pi"
     assert result.plan.nodes[0].instruction
     assert "使用pi" not in result.plan.nodes[0].instruction
     assert "调研" in result.plan.nodes[0].instruction
@@ -172,15 +193,15 @@ def test_all_agents_goal_fans_out_parallel(planner: Planner):
         ready=ALL_AGENTS,
     )
     assert result.method == "heuristic_multi"
-    skills = {n.skill for n in result.plan.nodes}
-    assert skills == ALL_AGENTS
+    keys = {n.agent_key for n in result.plan.nodes}
+    assert keys == ALL_AGENTS
     assert all(n.depends_on == [] for n in result.plan.nodes)
     assert len(result.plan.nodes) == 3
     for n in result.plan.nodes:
         assert n.instruction
         assert "ui2v" in n.instruction
         assert "用目前所有" not in n.instruction
-        assert "独立" in n.instruction or n.skill in n.instruction
+        assert "独立" in n.instruction or n.agent_key in n.instruction
 
 
 def test_all_agents_skips_unready_peers(planner: Planner):
@@ -193,7 +214,7 @@ def test_all_agents_skips_unready_peers(planner: Planner):
     )
     assert result.method == "heuristic_multi"
     assert len(result.plan.nodes) == 1
-    assert result.plan.nodes[0].skill == "claude-code"
+    assert result.plan.nodes[0].agent_key == "claude-code"
 
 
 def test_all_agents_with_only_one_online_stays_single(planner: Planner):
@@ -205,20 +226,21 @@ def test_all_agents_with_only_one_online_stays_single(planner: Planner):
     )
     assert result.method == "heuristic_multi"
     assert len(result.plan.nodes) == 1
-    assert result.plan.nodes[0].skill == "claude-code"
+    assert result.plan.nodes[0].agent_key == "claude-code"
 
 
 def test_supervisor_aop_node_excluded_from_fanout(planner: Planner):
-    mixed = ALL_AGENTS | {"aop-node"}
+    mixed = ALL_AGENTS | {"aop-node", "node-local-1"}
     result = _plan(
         planner,
         "用目前所有的agent调研 ui2v",
         agents=mixed,
         ready=mixed,
     )
-    skills = {n.skill for n in result.plan.nodes}
-    assert "aop-node" not in skills
-    assert skills == ALL_AGENTS
+    keys = {n.agent_key for n in result.plan.nodes}
+    assert "aop-node" not in keys
+    assert "node-local-1" not in keys
+    assert keys == ALL_AGENTS
 
 
 def test_no_agents_raises():
@@ -237,7 +259,7 @@ def test_fallback_default_agent():
             with patch.object(p, "_heuristic_nodes", return_value=[]):
                 result = p.plan("noop")
     assert result.method == "fallback"
-    assert result.plan.nodes[0].skill == "claude-code"
+    assert result.plan.nodes[0].agent_key == "claude-code"
 
 
 def test_plan_rejects_unknown_agent():
@@ -247,7 +269,23 @@ def test_plan_rejects_unknown_agent():
         with patch.object(p, "list_ready_agents", return_value=["claude-code"]):
             from planner.dag import PlanNode
 
-            bad = [PlanNode(id="a", skill="missing-agent")]
+            bad = [PlanNode(id="a", agent_key="missing-agent")]
             with patch.object(p, "_heuristic_nodes", return_value=bad):
                 with pytest.raises(DAGValidationError):
                     p.plan("x")
+
+
+def test_probe_keys_ready_runs_in_parallel(monkeypatch):
+    import time
+
+    def slow(_endpoint, *, timeout_s=0.8):
+        time.sleep(0.2)
+        return True
+
+    monkeypatch.setattr("planner.probe_agent_ready", slow)
+    endpoints = {f"a{i}": f"http://127.0.0.1:{8011 + i}/" for i in range(8)}
+    t0 = time.perf_counter()
+    ready = probe_keys_ready(endpoints, endpoints)
+    elapsed = time.perf_counter() - t0
+    assert set(ready) == set(endpoints)
+    assert elapsed < 1.0

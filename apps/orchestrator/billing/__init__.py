@@ -23,16 +23,11 @@ _DEFAULT_PRICES: dict[str, Any] = {
     "task_created": 0.02,
     "agent_run": 0.01,
     "per_skill": {
-        "web-research": 0.006,
-        "web-search": 0.005,
-        "research-summarize": 0.01,
-        "knowledge-search": 0.008,
-        "business-analysis": 0.015,
-        "report-generation": 0.02,
-        "text-to-image": 0.03,
-        "text-to-video": 0.05,
-        "code-execution": 0.01,
-        "browser-automation": 0.02,
+        "claude-code": 0.01,
+        "deepseek-harness": 0.008,
+        "pi": 0.008,
+        "openclaw": 0.008,
+        "hermes": 0.008,
     },
 }
 
@@ -88,7 +83,7 @@ class BillingService:
             runs = conn.execute(
                 """
                 SELECT
-                  COALESCE(n.skill, 'unknown') AS skill,
+                  COALESCE(n.agent_key, 'unknown') AS agent_key,
                   COUNT(*)::int AS runs,
                   COUNT(*) FILTER (WHERE r.status = 'success')::int AS success,
                   COUNT(*) FILTER (WHERE r.status = 'failed')::int AS failed,
@@ -118,22 +113,22 @@ class BillingService:
         task_total = int((task_row or {}).get("total") or 0)
         task_cost = round(task_total * task_price, 6)
 
-        by_skill: list[dict[str, Any]] = []
+        by_agent: list[dict[str, Any]] = []
         run_total = 0
         run_cost = 0.0
         stored_cost = 0.0
         for row in runs:
-            skill = row["skill"] or "unknown"
+            agent_key = row["agent_key"] or "unknown"
             n = int(row["runs"] or 0)
             run_total += n
-            unit = skill_prices.get(skill, run_price)
+            unit = skill_prices.get(agent_key, run_price)
             est = round(n * unit, 6)
             run_cost += est
             stored = float(row.get("stored_cost_usd") or 0)
             stored_cost += stored
-            by_skill.append(
+            by_agent.append(
                 {
-                    "skill": skill,
+                    "agent_key": agent_key,
                     "runs": n,
                     "success": int(row.get("success") or 0),
                     "failed": int(row.get("failed") or 0),
@@ -159,7 +154,7 @@ class BillingService:
             "task_cost_usd": task_cost,
             "agent_runs": {
                 "total": run_total,
-                "by_skill": by_skill,
+                "by_agent_key": by_agent,
                 "estimated_cost_usd": round(run_cost, 6),
                 "stored_cost_usd": round(stored_cost, 6),
             },

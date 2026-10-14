@@ -19,6 +19,13 @@ def test_permanent_pi_missing():
     )
 
 
+def test_permanent_balance_shortage():
+    assert is_permanent_agent_error("余额不足")
+    assert is_permanent_agent_error(
+        "API Error: 402 Insufficient Balance (request_id: abc)"
+    )
+
+
 def test_transient_a2a_not_permanent():
     assert not is_permanent_agent_error("A2A error: A2A execution failed with status failed")
     assert not is_permanent_agent_error("timeout waiting for agent")

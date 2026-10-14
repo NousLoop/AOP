@@ -59,9 +59,14 @@ func (s *Server) Handler() http.Handler {
 				"GET /health",
 				"GET /v1/agents",
 				"POST /v1/agents/register",
+				"PATCH /v1/agents/{id}",
 				"GET /v1/agents/{id}/capacity",
 				"GET /v1/agents/{id}/reliability",
 				"GET /v1/agents/{id}/health",
+				"POST /v1/agents/{id}/heartbeat",
+				"POST /v1/agent-runtime/{id}/heartbeat",
+				"GET /v1/nodes",
+				"POST /v1/nodes/{id}/heartbeat",
 				"GET /v1/api-keys",
 				"POST /v1/api-keys",
 				"DELETE /v1/api-keys/{id}",
@@ -117,6 +122,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/{agentID}/capacity", s.OrchestratorProxy.ServeHTTP)
 			r.Get("/{agentID}/reliability", s.OrchestratorProxy.ServeHTTP)
 			r.Get("/{agentID}/health", s.OrchestratorProxy.ServeHTTP)
+			// Compat: old aopd posted here; Orchestrator aliases to agent-runtime.
+			r.Post("/{agentID}/heartbeat", s.OrchestratorProxy.ServeHTTP)
 		}
 		s.Agents.Routes(r)
 	})
@@ -200,6 +207,9 @@ func (s *Server) Handler() http.Handler {
 		// Phase 3: agent lifecycle (gateway-safe path; /v1/agents/* is registry).
 		r.Handle("/v1/agent-runtime", s.OrchestratorProxy)
 		r.Handle("/v1/agent-runtime/*", s.OrchestratorProxy)
+		// Edge supervisors are not A2A agents.
+		r.Handle("/v1/nodes", s.OrchestratorProxy)
+		r.Handle("/v1/nodes/*", s.OrchestratorProxy)
 		r.Handle("/v1/metrics", s.OrchestratorProxy)
 		r.Handle("/v1/metrics/*", s.OrchestratorProxy)
 		r.Handle("/v1/memory", taskProxy)

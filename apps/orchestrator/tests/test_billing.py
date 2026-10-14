@@ -14,7 +14,8 @@ def test_load_prices_defaults(monkeypatch):
     prices = load_prices()
     assert prices["currency"] == "USD"
     assert prices["task_created"] == 0.02
-    assert "web-search" in prices["per_skill"]
+    assert "claude-code" in prices["per_skill"]
+    assert "web-search" not in prices["per_skill"]
 
 
 def test_load_prices_override(monkeypatch):
@@ -23,14 +24,13 @@ def test_load_prices_override(monkeypatch):
         json.dumps(
             {
                 "task_created": 0.05,
-                "per_skill": {"web-search": 0.1},
+                "per_skill": {"claude-code": 0.1},
             }
         ),
     )
     prices = load_prices()
     assert prices["task_created"] == 0.05
-    assert prices["per_skill"]["web-search"] == 0.1
-    assert "knowledge-search" in prices["per_skill"]
+    assert prices["per_skill"]["claude-code"] == 0.1
 
 
 def test_load_prices_invalid_json(monkeypatch):
@@ -44,7 +44,7 @@ def test_usage_aggregation_mocked(monkeypatch):
     task_row = {"total": 2, "completed": 1, "failed": 0, "active": 1}
     run_rows = [
         {
-            "skill": "web-search",
+            "agent_key": "claude-code",
             "runs": 3,
             "success": 2,
             "failed": 1,
@@ -63,13 +63,13 @@ def test_usage_aggregation_mocked(monkeypatch):
         MagicMock(fetchall=MagicMock(return_value=daily_rows)),
     ]
 
-    with patch("billing.psycopg.connect", return_value=conn):
+    with patch("billing.connect", return_value=conn):
         out = BillingService().usage(days=0)  # clamps to 1
 
     assert out["window_days"] == 1
     assert out["tasks"]["total"] == 2
     assert out["task_cost_usd"] == 0.04  # 2 * 0.02
     assert out["agent_runs"]["total"] == 3
-    assert out["agent_runs"]["by_skill"][0]["estimated_cost_usd"] == 0.015  # 3 * 0.005
-    assert out["estimated_total_usd"] == 0.055
+    assert out["agent_runs"]["by_agent_key"][0]["estimated_cost_usd"] == 0.03  # 3 * 0.01
+    assert out["estimated_total_usd"] == 0.07
     assert out["daily_tasks"][0]["tasks"] == 2

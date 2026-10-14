@@ -69,10 +69,10 @@ def test_request_tracking_direct():
                 idempotency_key = f"req_{task_id[:8]}_{node_key}"
                 conn.execute(
                     """
-                    INSERT INTO task_nodes (id, task_id, node_key, skill, status, input_json, attempt, max_retry, idempotency_key, created_at, updated_at)
+                    INSERT INTO task_nodes (id, task_id, node_key, agent_key, status, input_json, attempt, max_retry, idempotency_key, created_at, updated_at)
                     VALUES (%s::uuid, %s::uuid, %s, %s, 'pending', %s::jsonb, 0, 3, %s, now(), now())
                     """,
-                    (node_id, task_id, node_key, "web-search", Jsonb({"goal": "test"}), idempotency_key),
+                    (node_id, task_id, node_key, "claude-code", Jsonb({"goal": "test"}), idempotency_key),
                 )
         
         # Test request tracking

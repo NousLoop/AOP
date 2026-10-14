@@ -13,7 +13,7 @@ class DAGValidationError(ValueError):
 @dataclass
 class PlanNode:
     id: str
-    skill: str
+    agent_key: str
     depends_on: list[str] = field(default_factory=list)
     requires_approval: bool = False
     # none | system | agent | both — empty falls back to requires_approval → system
@@ -24,7 +24,7 @@ class PlanNode:
     instruction: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"id": self.id, "skill": self.skill}
+        payload: dict[str, Any] = {"id": self.id, "agent_key": self.agent_key}
         if self.depends_on:
             payload["depends_on"] = list(self.depends_on)
         mode = (self.approval_mode or "").strip().lower() or None
@@ -57,7 +57,7 @@ class TaskPlan:
         nodes = [
             PlanNode(
                 id=str(n["id"]),
-                skill=str(n["skill"]),
+                agent_key=str(n.get("agent_key") or ""),
                 depends_on=[str(d) for d in (n.get("depends_on") or [])],
                 requires_approval=bool(n.get("requires_approval")),
                 approval_mode=(
@@ -85,7 +85,7 @@ class TaskPlan:
         )
 
 
-def validate_plan(plan: TaskPlan, *, available_skills: Iterable[str] | None = None) -> None:
+def validate_plan(plan: TaskPlan, *, available_agent_keys: Iterable[str] | None = None) -> None:
     if not plan.nodes:
         raise DAGValidationError("plan must contain at least one node")
 
@@ -96,14 +96,14 @@ def validate_plan(plan: TaskPlan, *, available_skills: Iterable[str] | None = No
         raise DAGValidationError("node ids must be unique")
 
     id_set = set(ids)
-    skills_ok = set(available_skills) if available_skills is not None else None
+    keys_ok = set(available_agent_keys) if available_agent_keys is not None else None
 
     for node in plan.nodes:
-        if not node.skill or not node.skill.strip():
-            raise DAGValidationError(f"node {node.id!r} skill must be non-empty")
-        if skills_ok is not None and node.skill not in skills_ok:
+        if not node.agent_key:
+            raise DAGValidationError(f"node {node.id!r} agent_key must be non-empty")
+        if keys_ok is not None and node.agent_key not in keys_ok:
             raise DAGValidationError(
-                f"node {node.id!r} skill {node.skill!r} is not available in registry"
+                f"node {node.id!r} agent_key {node.agent_key!r} is not available in registry"
             )
         for dep in node.depends_on:
             if dep not in id_set:

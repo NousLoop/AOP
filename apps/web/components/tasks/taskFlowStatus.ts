@@ -22,4 +22,33 @@ export const STATUS_LABEL: Record<string, string> = {
   failed: "失败",
   retrying: "重试",
   cancelled: "已取消",
+  completed: "已完成",
 };
+
+export function isBalanceShortage(text?: string | null): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  if (text.includes("余额不足")) return true;
+  if (
+    /\b402\b/.test(text) &&
+    (t.includes("insufficient") ||
+      t.includes("api error") ||
+      t.includes("payment required") ||
+      t.includes("quota"))
+  ) {
+    return true;
+  }
+  return t.includes("insufficient balance") || t.includes("insufficient_quota");
+}
+
+export function flowVisualStatus(status: string, error?: string | null): string {
+  if (isBalanceShortage(error) && (status === "success" || status === "completed")) {
+    return "failed";
+  }
+  return status;
+}
+
+export function flowStatusLabel(status: string, error?: string | null): string {
+  if (isBalanceShortage(error)) return "余额不足";
+  return STATUS_LABEL[status] || status;
+}

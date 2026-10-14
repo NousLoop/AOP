@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from defaults import DEFAULT_TENANT_ID, database_url as resolve_database_url
+from defaults import DEFAULT_TENANT_ID, database_url as resolve_database_url, is_work_agent
 
 import os
 from dataclasses import dataclass, field
@@ -133,17 +133,20 @@ class AgentRouter:
             raise RouterError("skill is required")
 
         excluded = {str(x) for x in (exclude_agent_ids or []) if x}
-        candidates = self._candidates_from_redis(skill)
-        source = "redis+pg"
-        if not candidates:
-            candidates = self._candidates_from_pg(skill)
-            source = "pg"
-        # Skills removed: treat ``skill`` as agent_key and route directly.
-        if not candidates:
-            row = self._get_agent(skill)
-            if row:
-                candidates = [row]
-                source = "agent_key"
+        keyed = self._get_agent(skill)
+        keyed_key = str((keyed or {}).get("agent_key") or "")
+        exact_key = keyed is not None and is_work_agent(keyed_key) and (
+            keyed_key == skill or str(keyed.get("agent_id") or "") == skill
+        )
+        if exact_key:
+            candidates = [keyed]
+            source = "agent_key"
+        else:
+            candidates = self._candidates_from_redis(skill)
+            source = "redis+pg"
+            if not candidates:
+                candidates = self._candidates_from_pg(skill)
+                source = "pg"
 
         online = [
             c
@@ -151,7 +154,13 @@ class AgentRouter:
             if c["status"] in ONLINE_STATUSES
             and c.get("endpoint")
             and c["agent_id"] not in excluded
+            and is_work_agent(str(c.get("agent_key") or ""))
         ]
+        # Plan skill is agent_key: never score-mix a different agent into that slot.
+        named = [c for c in online if str(c.get("agent_key") or "") == skill]
+        if keyed_key == skill or named:
+            online = named
+            source = "agent_key"
         if not online:
             return []
 
@@ -271,10 +280,12 @@ class AgentRouter:
         tid = tenant_id or self.tenant_id
 
         candidates = self._all_candidates_with_cards(tenant_id=tid)
+        candidates = [
+            c for c in candidates if is_work_agent(str(c.get("agent_key") or ""))
+        ]
 
         # Stage 1: skill match (union by default, intersection when match_all_skills).
-        # Harness cards often ship skills:[]; planner still routes by agent_key, so
-        # treat agent_key as an implicit skill for discovery/route.
+        # Plan nodes use agent_key; treat key as an implicit skill.
         if skills:
             wanted = set(skills)
 
@@ -597,7 +608,7 @@ def normalize_endpoint(url: str) -> str:
 
 def hitl_skills() -> set[str]:
     """Skills that pause for human approval after success (comma-separated env)."""
-    raw = os.getenv("HITL_SKILLS", "report-generation,ppt-generation")
+    raw = os.getenv("HITL_SKILLS", "off")
     if not raw or raw.strip().lower() in {"0", "false", "off", "none"}:
         return set()
     return {s.strip() for s in raw.split(",") if s.strip()}

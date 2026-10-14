@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -21,6 +22,7 @@ PRIMARY_TEXT_MIME = "text/markdown; charset=utf-8"
 LEGACY_TEXT_NAMES = ("output.md", "output.txt")  # preference order
 _MAX_BUNDLE_BYTES = 15_000_000
 _MAX_BUNDLE_FILES = 32
+_MAX_LOCAL_ARTIFACT = 2_000_000
 _BUNDLE_EXACT = {"report.html", "report.css", "report.pdf", "deck.pptx", "report.pptx"}
 _BUNDLE_DIRS = ("assets/images/", "assets/charts/", "assets/diagrams/")
 _MIME = {
@@ -87,6 +89,80 @@ def decode_bundle_files(files: dict[str, Any]) -> list[tuple[str, bytes, str]]:
             continue
         decoded.append((rel, data, mime))
     return decoded
+
+
+def harness_workdir_roots() -> list[Path]:
+    """Directories the worker may copy hosted runner files from."""
+    roots: list[Path] = []
+    raw = (os.getenv("HARNESS_WORKDIR") or "").strip()
+    if raw:
+        try:
+            roots.append(Path(raw).expanduser().resolve())
+        except OSError:
+            pass
+    try:
+        roots.append((Path.home() / ".aop" / "workspaces").resolve())
+    except OSError:
+        pass
+    return roots
+
+
+def safe_hosted_artifact_path(raw: str | None) -> Path | None:
+    """Absolute file under a harness workdir root, size-capped."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        path = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_file():
+        return None
+    try:
+        if path.stat().st_size > _MAX_LOCAL_ARTIFACT:
+            return None
+    except OSError:
+        return None
+    for root in harness_workdir_roots():
+        try:
+            path.relative_to(root)
+            return path
+        except ValueError:
+            continue
+    return None
+
+
+def hosted_local_files(data: dict[str, Any]) -> list[tuple[str, bytes, str]]:
+    """Copy hosted ``data.artifact`` / ``data.artifacts[].path`` into the object store."""
+    out: list[tuple[str, bytes, str]] = []
+    seen: set[str] = set()
+    candidates: list[str] = []
+    art = data.get("artifact")
+    if isinstance(art, str):
+        candidates.append(art)
+    extra = data.get("artifacts")
+    if isinstance(extra, list):
+        for item in extra:
+            if isinstance(item, str):
+                candidates.append(item)
+            elif isinstance(item, dict):
+                p = item.get("path") or item.get("artifact")
+                if isinstance(p, str):
+                    candidates.append(p)
+    for raw in candidates:
+        path = safe_hosted_artifact_path(raw)
+        if path is None:
+            continue
+        name = path.name
+        if not name or name in seen or name in {".", ".."}:
+            continue
+        try:
+            body = path.read_bytes()
+        except OSError:
+            continue
+        mime = _MIME.get(path.suffix.lower(), "application/octet-stream")
+        seen.add(name)
+        out.append((name, body, mime))
+    return out
 
 
 @dataclass
@@ -249,11 +325,27 @@ class ArtifactStore:
                 )
             )
         if data is not None:
-            payload = data
-            if isinstance(data, dict) and isinstance(data.get("files"), dict):
+            payload: dict[str, Any] | list[Any] = data
+            if isinstance(data, dict):
                 payload = dict(data)
-                index: dict[str, Any] = {}
-                for rel, raw, mime in decode_bundle_files(data["files"]):
+                if isinstance(data.get("files"), dict):
+                    index: dict[str, Any] = {}
+                    for rel, raw, mime in decode_bundle_files(data["files"]):
+                        ref = self.put_bytes(
+                            task_id=task_id,
+                            node_key=node_key,
+                            name=rel,
+                            data=raw,
+                            content_type=mime,
+                            artifact_type="file",
+                        )
+                        refs.append(ref)
+                        index[rel] = {"uri": ref.uri, "size": ref.size, "mime_type": mime}
+                    payload["files"] = index
+                ingested: dict[str, Any] = {}
+                for rel, raw, mime in hosted_local_files(data):
+                    if rel in {PRIMARY_TEXT_NAME, "output.json", "meta.json"}:
+                        rel = f"hosted-{rel}"
                     ref = self.put_bytes(
                         task_id=task_id,
                         node_key=node_key,
@@ -263,8 +355,9 @@ class ArtifactStore:
                         artifact_type="file",
                     )
                     refs.append(ref)
-                    index[rel] = {"uri": ref.uri, "size": ref.size, "mime_type": mime}
-                payload["files"] = index
+                    ingested[rel] = {"uri": ref.uri, "size": ref.size, "mime_type": mime}
+                if ingested:
+                    payload["ingested"] = ingested
             refs.append(
                 self.put_json(
                     task_id=task_id,

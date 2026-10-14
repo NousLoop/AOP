@@ -5,16 +5,28 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, PlainTextResponse
 from pydantic import BaseModel
 
-from app_context import ctx
+from app_context import ctx, forbid_cross_tenant
 from execution import cancel_fanout
+from execution.dag_bridge import sync_from_dag
 from api.runtime import collaboration_graph_payload
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["task-ops"])
+
+
+def _task_row(request: Request, task_id: str) -> dict[str, Any]:
+    row = ctx.tasks.get(task_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "task not found"},
+        )
+    forbid_cross_tenant(request, row.get("tenant_id"))
+    return row
 
 
 class HitlDecisionRequest(BaseModel):
@@ -49,42 +61,47 @@ def list_artifacts_global(
 
 
 @router.post("/v1/tasks/{task_id}/recover")
-def recover_task(task_id: str) -> dict[str, Any]:
-    """Phase 3: recover a stale/failed/timeout execution."""
-    if ctx.execution.get(task_id) is None:
-        row = ctx.tasks.get(task_id)
-        if not row:
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "not_found", "message": "task not found"},
-            )
-        ctx.execution.create(
-            task_id=task_id,
-            root_task_id=task_id,
-            correlation_id=task_id,
+def recover_task(request: Request, task_id: str) -> dict[str, Any]:
+    """Recover a stale/failed/timeout execution. Seeds OS record from DAG if missing."""
+    row = _task_row(request, task_id)
+    try:
+        sync_from_dag(
+            ctx.execution,
+            task_id,
+            row.get("status"),
+            tenant_id=row.get("tenant_id"),
             metadata={"seeded_from": "recover"},
         )
-        ctx.execution.transition(task_id, "TIMEOUT")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("recover seed failed task=%s: %s", task_id, exc)
+    dag: dict[str, Any] = {"enqueued_nodes": []}
     try:
-        return ctx.execution.recover(task_id)
+        dag = ctx.tasks.requeue_incomplete(task_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("recover dag requeue failed task=%s: %s", task_id, exc)
+        dag = {"enqueued_nodes": [], "error": str(exc)}
+    try:
+        os_out = ctx.execution.recover(task_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail={"code": "recover_error", "message": str(exc)},
         ) from exc
+    if not isinstance(os_out, dict):
+        os_out = {"result": os_out}
+    os_out["enqueued_nodes"] = dag.get("enqueued_nodes") or []
+    os_out["dag"] = dag
+    return os_out
 
 
 @router.get("/v1/tasks/{task_id}/checkpoints")
 def list_task_checkpoints(
+    request: Request,
     task_id: str,
     node_key: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+    _task_row(request, task_id)
     try:
         items = ctx.tasks.list_checkpoints(task_id, node_key=node_key, limit=limit)
     except Exception as exc:  # noqa: BLE001
@@ -97,15 +114,12 @@ def list_task_checkpoints(
 
 @router.post("/v1/tasks/{task_id}/nodes/{node_key}/replay")
 def replay_task_node(
+    request: Request,
     task_id: str,
     node_key: str,
     body: NodeReplayRequest | None = None,
 ) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+    _task_row(request, task_id)
     try:
         return ctx.tasks.replay_from_node(
             task_id,
@@ -125,12 +139,8 @@ def replay_task_node(
 
 
 @router.get("/v1/tasks/{task_id}/collaboration-graph")
-def task_collaboration_graph(task_id: str) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def task_collaboration_graph(request: Request, task_id: str) -> dict[str, Any]:
+    row = _task_row(request, task_id)
     try:
         graph = collaboration_graph_payload(task_id)
     except Exception as exc:  # noqa: BLE001
@@ -148,7 +158,8 @@ def task_collaboration_graph(task_id: str) -> dict[str, Any]:
 
 
 @router.post("/v1/tasks/{task_id}/cancel")
-def cancel_task(task_id: str) -> dict[str, Any]:
+def cancel_task(request: Request, task_id: str) -> dict[str, Any]:
+    _task_row(request, task_id)
     agent_endpoints: dict[str, str] = {}
     try:
         if hasattr(ctx.marketplace, "list_agents"):
@@ -220,12 +231,10 @@ def cancel_task(task_id: str) -> dict[str, Any]:
 
 
 @router.post("/v1/tasks/{task_id}/approve")
-def approve_task(task_id: str, body: HitlDecisionRequest | None = None) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def approve_task(
+    request: Request, task_id: str, body: HitlDecisionRequest | None = None
+) -> dict[str, Any]:
+    _task_row(request, task_id)
     try:
         return ctx.tasks.approve(
             task_id,
@@ -241,12 +250,10 @@ def approve_task(task_id: str, body: HitlDecisionRequest | None = None) -> dict[
 
 
 @router.post("/v1/tasks/{task_id}/reject")
-def reject_task(task_id: str, body: HitlDecisionRequest | None = None) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def reject_task(
+    request: Request, task_id: str, body: HitlDecisionRequest | None = None
+) -> dict[str, Any]:
+    _task_row(request, task_id)
     try:
         return ctx.tasks.reject(
             task_id,
@@ -261,18 +268,17 @@ def reject_task(task_id: str, body: HitlDecisionRequest | None = None) -> dict[s
 
 
 @router.get("/v1/tasks/{task_id}/events")
-def get_events(task_id: str, limit: int = Query(80, ge=1, le=200)) -> dict[str, Any]:
+def get_events(
+    request: Request, task_id: str, limit: int = Query(80, ge=1, le=200)
+) -> dict[str, Any]:
+    _task_row(request, task_id)
     events = ctx.tasks.events(task_id, limit=limit)
     return {"events": events}
 
 
 @router.get("/v1/tasks/{task_id}/artifacts")
-def get_artifacts(task_id: str) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def get_artifacts(request: Request, task_id: str) -> dict[str, Any]:
+    _task_row(request, task_id)
     try:
         artifacts = ctx.tasks.list_artifacts(task_id)
     except Exception as exc:  # noqa: BLE001
@@ -284,12 +290,8 @@ def get_artifacts(task_id: str) -> dict[str, Any]:
 
 
 @router.get("/v1/tasks/{task_id}/package")
-def download_task_package(task_id: str) -> Response:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def download_task_package(request: Request, task_id: str) -> Response:
+    _task_row(request, task_id)
     try:
         data = ctx.tasks.build_package(task_id)
     except KeyError:
@@ -312,12 +314,8 @@ def download_task_package(task_id: str) -> Response:
 
 
 @router.get("/v1/tasks/{task_id}/report")
-def download_task_report(task_id: str) -> PlainTextResponse:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def download_task_report(request: Request, task_id: str) -> PlainTextResponse:
+    _task_row(request, task_id)
     try:
         md = ctx.tasks.run_report_markdown(task_id)
     except KeyError:
@@ -333,12 +331,8 @@ def download_task_report(task_id: str) -> PlainTextResponse:
 
 
 @router.get("/v1/tasks/{task_id}/evaluation")
-def get_task_evaluation(task_id: str) -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def get_task_evaluation(request: Request, task_id: str) -> dict[str, Any]:
+    _task_row(request, task_id)
     ev = ctx.tasks.get_evaluation(task_id)
     if not ev:
         raise HTTPException(
@@ -349,12 +343,8 @@ def get_task_evaluation(task_id: str) -> dict[str, Any]:
 
 
 @router.post("/v1/tasks/{task_id}/evaluate")
-def evaluate_task(task_id: str, method: str = "heuristic") -> dict[str, Any]:
-    row = ctx.tasks.get(task_id)
-    if not row:
-        raise HTTPException(
-            status_code=404, detail={"code": "not_found", "message": "task not found"}
-        )
+def evaluate_task(request: Request, task_id: str, method: str = "heuristic") -> dict[str, Any]:
+    row = _task_row(request, task_id)
     if row.get("status") not in ("completed", "failed", "cancelled"):
         raise HTTPException(
             status_code=409,

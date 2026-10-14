@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,25 +14,38 @@ import (
 
 const defaultTenantID = "00000000-0000-0000-0000-000000000001"
 
+// IsWorkAgentKey is false for edge supervisors (aopd). Those are nodes, not A2A agents.
+func IsWorkAgentKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "" {
+		return false
+	}
+	return !strings.HasPrefix(k, "aop-node") && !strings.HasPrefix(k, "node-local")
+}
+
 type Store struct {
 	DB    *pgxpool.Pool
 	Redis *redis.Client
 }
 
 type AgentRecord struct {
-	ID          string          `json:"agent_id"`
-	AgentKey    string          `json:"agent_key"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Status      string          `json:"status"`
-	Version     string          `json:"version,omitempty"`
-	Endpoint    string          `json:"endpoint,omitempty"`
-	Protocol    string          `json:"protocol"`
-	Priority    int             `json:"priority"`
-	Skills      []string        `json:"skills"`
-	Card        json.RawMessage `json:"card,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID                string          `json:"agent_id"`
+	AgentKey          string          `json:"agent_key"`
+	Name              string          `json:"name"`
+	Description       string          `json:"description,omitempty"`
+	Status            string          `json:"status"`
+	Version           string          `json:"version,omitempty"`
+	Endpoint          string          `json:"endpoint,omitempty"`
+	Protocol          string          `json:"protocol"`
+	Priority          int             `json:"priority"`
+	Skills            []string        `json:"skills"`
+	Identity          string          `json:"identity"`
+	OwnerUserID       string          `json:"owner_user_id,omitempty"`
+	OwnerEmail        string          `json:"owner_email,omitempty"`
+	OwnerDisplayName  string          `json:"owner_display_name,omitempty"`
+	Card              json.RawMessage `json:"card,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 type RegisterResult struct {
@@ -83,14 +97,22 @@ func (s *Store) Register(ctx context.Context, tenantID, endpoint string, card Ag
 	now := time.Now().UTC()
 
 	if err == pgx.ErrNoRows {
+		ownerID, _ := s.resolveDefaultOwner(ctx, tx, tenantID)
+		var ownerArg any
+		if ownerID != "" {
+			ownerArg = ownerID
+		}
 		err = tx.QueryRow(ctx, `
 			INSERT INTO agents (
 				tenant_id, agent_key, name, description, protocol, status,
-				current_version, card_json, priority, created_at, updated_at
+				current_version, card_json, priority, identity, owner_user_id,
+				created_at, updated_at
 			) VALUES (
-				$1::uuid, $2, $3, $4, 'A2A', $5, $6, $7::jsonb, 100, $8, $8
+				$1::uuid, $2, $3, $4, 'A2A', $5, $6, $7::jsonb, 100, $8, $9,
+				$10, $10
 			) RETURNING id::text
-		`, tenantID, agentKey, card.Name, card.Description, status, card.Version, cardJSON, now).Scan(&agentID)
+		`, tenantID, agentKey, card.Name, card.Description, status, card.Version, cardJSON,
+			DefaultIdentity, ownerArg, now).Scan(&agentID)
 		if err != nil {
 			return RegisterResult{}, fmt.Errorf("insert agent: %w", err)
 		}
@@ -202,8 +224,13 @@ func (s *Store) List(ctx context.Context, tenantID, skill, status string) ([]Age
 		       COALESCE((
 		         SELECT array_agg(s.skill_id ORDER BY s.skill_id)
 		         FROM agent_skills s WHERE s.agent_id = a.id
-		       ), '{}')
+		       ), '{}'),
+		       COALESCE(a.identity, 'assistant'),
+		       COALESCE(a.owner_user_id::text, ''),
+		       COALESCE(u.email, ''),
+		       COALESCE(u.display_name, '')
 		FROM agents a
+		LEFT JOIN users u ON u.id = a.owner_user_id
 		WHERE a.tenant_id = $1::uuid
 	`
 	args := []any{tenantID}
@@ -235,10 +262,14 @@ func (s *Store) List(ctx context.Context, tenantID, skill, status string) ([]Age
 			&rec.ID, &rec.AgentKey, &rec.Name, &rec.Description, &rec.Status,
 			&rec.Version, &rec.Protocol, &rec.Priority, &rec.CreatedAt, &rec.UpdatedAt,
 			&rec.Endpoint, &skills,
+			&rec.Identity, &rec.OwnerUserID, &rec.OwnerEmail, &rec.OwnerDisplayName,
 		); err != nil {
 			return nil, err
 		}
 		rec.Skills = skills
+		if !IsWorkAgentKey(rec.AgentKey) {
+			continue
+		}
 		out = append(out, rec)
 	}
 	return out, rows.Err()
@@ -263,13 +294,19 @@ func (s *Store) Get(ctx context.Context, tenantID, agentID string) (AgentRecord,
 		         SELECT array_agg(s.skill_id ORDER BY s.skill_id)
 		         FROM agent_skills s WHERE s.agent_id = a.id
 		       ), '{}'),
-		       COALESCE(a.card_json, '{}'::jsonb)
+		       COALESCE(a.card_json, '{}'::jsonb),
+		       COALESCE(a.identity, 'assistant'),
+		       COALESCE(a.owner_user_id::text, ''),
+		       COALESCE(u.email, ''),
+		       COALESCE(u.display_name, '')
 		FROM agents a
+		LEFT JOIN users u ON u.id = a.owner_user_id
 		WHERE a.tenant_id = $1::uuid AND (a.id::text = $2 OR a.agent_key = $2)
 	`, tenantID, agentID).Scan(
 		&rec.ID, &rec.AgentKey, &rec.Name, &rec.Description, &rec.Status,
 		&rec.Version, &rec.Protocol, &rec.Priority, &rec.CreatedAt, &rec.UpdatedAt,
 		&rec.Endpoint, &skills, &card,
+		&rec.Identity, &rec.OwnerUserID, &rec.OwnerEmail, &rec.OwnerDisplayName,
 	)
 	if err == pgx.ErrNoRows {
 		return AgentRecord{}, ErrNotFound
@@ -280,6 +317,106 @@ func (s *Store) Get(ctx context.Context, tenantID, agentID string) (AgentRecord,
 	rec.Skills = skills
 	rec.Card = card
 	return rec, nil
+}
+
+// UpdateMeta patches platform governance fields (identity / owner). Re-register does not overwrite these.
+func (s *Store) UpdateMeta(ctx context.Context, tenantID, agentID string, identity *string, ownerUserID *string) (AgentRecord, error) {
+	if tenantID == "" {
+		tenantID = defaultTenantID
+	}
+	rec, err := s.Get(ctx, tenantID, agentID)
+	if err != nil {
+		return AgentRecord{}, err
+	}
+
+	newIdentity := rec.Identity
+	if identity != nil {
+		norm, err := NormalizeIdentity(*identity)
+		if err != nil {
+			return AgentRecord{}, fmt.Errorf("%w: %v", ErrInvalidIdentity, err)
+		}
+		newIdentity = norm
+	}
+
+	newOwner := rec.OwnerUserID
+	if ownerUserID != nil {
+		oid := strings.TrimSpace(*ownerUserID)
+		if oid == "" {
+			newOwner = ""
+		} else {
+			if err := s.validateOwner(ctx, tenantID, oid); err != nil {
+				return AgentRecord{}, err
+			}
+			newOwner = oid
+		}
+	}
+
+	var ownerArg any
+	if newOwner != "" {
+		ownerArg = newOwner
+	}
+	_, err = s.DB.Exec(ctx, `
+		UPDATE agents SET
+			identity = $2,
+			owner_user_id = $3,
+			updated_at = now()
+		WHERE id = $1::uuid
+	`, rec.ID, newIdentity, ownerArg)
+	if err != nil {
+		return AgentRecord{}, fmt.Errorf("update meta: %w", err)
+	}
+	return s.Get(ctx, tenantID, rec.ID)
+}
+
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func (s *Store) resolveDefaultOwner(ctx context.Context, q queryRower, tenantID string) (string, error) {
+	var id string
+	err := q.QueryRow(ctx, `
+		SELECT id::text FROM users
+		WHERE tenant_id = $1::uuid AND lower(email) = lower($2)
+		LIMIT 1
+	`, tenantID, DevAdminEmail).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if err != pgx.ErrNoRows {
+		return "", err
+	}
+	err = q.QueryRow(ctx, `
+		SELECT id::text FROM users
+		WHERE tenant_id = $1::uuid
+		  AND lower(role) IN ('admin', 'owner')
+		  AND lower(COALESCE(status, 'active')) = 'active'
+		ORDER BY created_at ASC
+		LIMIT 1
+	`, tenantID).Scan(&id)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (s *Store) validateOwner(ctx context.Context, tenantID, userID string) error {
+	var ok bool
+	err := s.DB.QueryRow(ctx, `
+		SELECT true FROM users
+		WHERE id = $1::uuid
+		  AND tenant_id = $2::uuid
+		  AND lower(COALESCE(status, 'active')) = 'active'
+	`, userID, tenantID).Scan(&ok)
+	if err == pgx.ErrNoRows {
+		return fmt.Errorf("%w: user not found in tenant or inactive", ErrInvalidOwner)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidOwner, err)
+	}
+	return nil
 }
 
 func (s *Store) SetStatus(ctx context.Context, tenantID, agentID, status string) (AgentRecord, error) {

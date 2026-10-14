@@ -260,6 +260,17 @@ class ExecutionService:
                 "record": rec,
             }
         try:
+            live = self.store.get(task_id, operation=operation)
+            if live and live.state == ExecutionState.PENDING.value:
+                updated = self.start(task_id, operation=operation)
+                return {
+                    "action": "start",
+                    "class": klass,
+                    "ownership_token": token,
+                    "owner_id": owner,
+                    "lease_seconds": lease,
+                    "record": updated.to_dict(),
+                }
             updated = self.mark_retry(task_id, operation=operation, error_code="RECOVER")
             # Visual Runtime observation (does not alter recovery semantics)
             try:
@@ -390,6 +401,20 @@ class ExecutionService:
 
     def get(self, task_id: str, *, operation: str = "execute") -> Optional[ExecutionRecord]:
         return self.store.get(task_id, operation=operation)
+
+    def states_for_tasks(self, task_ids: list[str]) -> dict[str, str]:
+        """Batch OS execute-state for DAG task list (one plane, not a second status)."""
+        getter = getattr(self.store, "get_many", None)
+        recs: dict[str, Any]
+        if callable(getter):
+            recs = getter(list(task_ids), operation="execute")
+        else:
+            recs = {}
+            for tid in task_ids:
+                rec = self.store.get(str(tid), operation="execute")
+                if rec:
+                    recs[str(tid)] = rec
+        return {tid: rec.state for tid, rec in recs.items() if rec and rec.state}
 
     def get_execution_view(self, task_id: str) -> dict[str, Any]:
         execute = self.store.get(task_id, operation="execute")

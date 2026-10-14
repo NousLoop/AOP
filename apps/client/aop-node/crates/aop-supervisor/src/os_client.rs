@@ -14,6 +14,7 @@ pub struct OsClient {
     #[allow(dead_code)]
     api_key: String,
     node_id: String,
+    #[allow(dead_code)]
     register_endpoint: String,
     /// Agent id returned by register (or node_id fallback).
     pub agent_id: String,
@@ -42,16 +43,10 @@ impl OsClient {
         })
     }
 
+    /// Connect the supervisor. Nodes are not A2A agents — do not register :7920.
     pub async fn register(&mut self) -> Result<Value> {
-        let v = self.register_endpoint_url(&self.register_endpoint).await?;
-        if let Some(id) = v
-            .get("agent_id")
-            .or_else(|| v.get("id"))
-            .and_then(|x| x.as_str())
-        {
-            self.agent_id = id.to_string();
-        }
-        info!(agent_id = %self.agent_id, "registered node with gateway");
+        let v = self.heartbeat_node(None).await?;
+        info!(node_id = %self.node_id, "edge node heartbeat ok (not registered as agent)");
         Ok(v)
     }
 
@@ -106,10 +101,60 @@ impl OsClient {
     }
 
     pub async fn heartbeat(&self, extra: Option<Value>) -> Result<Value> {
-        self.heartbeat_agent(&self.agent_id, extra).await
+        self.heartbeat_node(extra).await
     }
 
-    /// Lifecycle heartbeat for an arbitrary agent id (node or child harness).
+    /// Supervisor pulse — not an Agent Card / registry entry.
+    pub async fn heartbeat_node(&self, extra: Option<Value>) -> Result<Value> {
+        let url = format!("{}/v1/nodes/{}/heartbeat", self.gateway_url, self.node_id);
+        let mut body = json!({
+            "status": "online",
+            "node_id": self.node_id,
+            "client_version": aop_core::CLIENT_VERSION,
+        });
+        if let Some(Value::Object(map)) = extra {
+            if let Some(obj) = body.as_object_mut() {
+                for (k, v) in map {
+                    obj.insert(k, v);
+                }
+            }
+        }
+        let resp = self.http.post(&url).json(&body).send().await;
+        match resp {
+            Ok(r) => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                if !status.is_success() {
+                    return self.heartbeat_node_orchestrator(body).await;
+                }
+                Ok(serde_json::from_str(&text).unwrap_or(json!({"ok": true})))
+            }
+            Err(_) => self.heartbeat_node_orchestrator(body).await,
+        }
+    }
+
+    async fn heartbeat_node_orchestrator(&self, body: Value) -> Result<Value> {
+        let url = format!(
+            "{}/v1/nodes/{}/heartbeat",
+            self.orchestrator_url, self.node_id
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            warn!(%status, %text, node_id = %self.node_id, "node heartbeat failed");
+            anyhow::bail!("node heartbeat failed: {status} {text}");
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(json!({"ok": true})))
+    }
+
+    /// Lifecycle heartbeat for an arbitrary agent id (harness child).
     pub async fn heartbeat_agent(&self, agent_id: &str, extra: Option<Value>) -> Result<Value> {
         // Lifecycle heartbeats go through Gateway → Orchestrator agent-runtime.
         // (Gateway owns /v1/agents/* registry; do not POST heartbeat there.)

@@ -148,6 +148,7 @@ class ExecutionEngine:
         self.memory = MemoryService()
         self._last_stale_check = 0.0
         self._request_tracking_service = None  # Lazy-loaded
+        self._execution = None  # OS ExecutionService; lazy postgres
         self._async_pool: ThreadPoolExecutor | None = None
         if _a2a_exec_async_enabled():
             self._async_pool = ThreadPoolExecutor(
@@ -168,6 +169,42 @@ class ExecutionEngine:
             except ImportError:
                 self._request_tracking_service = None
         return self._request_tracking_service
+
+    def _os_execution(self):
+        """Shared Postgres ExecutionRecord store (same SoT as Orchestrator HTTP)."""
+        if self._execution is False:
+            return None
+        if self._execution is None:
+            try:
+                from execution import build_execution_service
+
+                self._execution = build_execution_service()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[worker] execution store unavailable: {exc}")
+                self._execution = False
+                return None
+        return self._execution
+
+    def _sync_os(
+        self,
+        task_id: str,
+        dag_status: str | None = None,
+        *,
+        error: str | None = None,
+    ) -> None:
+        try:
+            from execution.dag_bridge import sync_from_dag
+
+            svc = self._os_execution()
+            if svc is None:
+                return
+            status = dag_status
+            if status is None:
+                row = self.scheduler.get_task(task_id)
+                status = (row or {}).get("status")
+            sync_from_dag(svc, task_id, status, error=error)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[worker] os execution sync skipped: {exc}")
 
     def run_forever(self) -> None:
         print(f"[worker] started consumer={self.worker_id}")
@@ -202,7 +239,7 @@ class ExecutionEngine:
         self,
         endpoint: str,
         query: str,
-        skill: str,
+        agent_key: str,
         idempotency_key: str | None = None,
         *,
         task_id: str | None = None,
@@ -221,7 +258,7 @@ class ExecutionEngine:
             return self.executor.execute(
                 endpoint,
                 query,
-                skill_id=skill,
+                skill_id=agent_key,
                 idempotency_key=idempotency_key,
                 task_id=task_id,
                 correlation_id=task_id,
@@ -265,6 +302,14 @@ class ExecutionEngine:
                 )
                 if detail:
                     error_msg = f"{error_msg}: {detail[:500]}"
+                try:
+                    from agent_runtime.harness.runners._cli_common import provider_balance_error
+
+                    bal = provider_balance_error(error_msg, result.text, detail)
+                    if bal:
+                        error_msg = bal
+                except ImportError:
+                    pass
                 raise handle_a2a_error(RuntimeError(error_msg))
             return result
         if with_retry:
@@ -286,6 +331,7 @@ class ExecutionEngine:
             reclaimed = self.scheduler.reclaim_stale_nodes(stale_seconds=NODE_STALE_SECONDS)
             for job in reclaimed:
                 self.streams.enqueue_execution(**job)
+                self._sync_os(str(job.get("task_id") or ""), "running")
                 print(
                     f"[worker] reclaimed stale node={job['node_key']} "
                     f"task={job['task_id'][:8]} attempt={job.get('attempt')}"
@@ -299,7 +345,7 @@ class ExecutionEngine:
         fields: dict[str, str],
         task_id: str,
         node_key: str,
-        skill: str,
+        agent_key: str,
         attempt: int,
         exclude: set[str],
     ):
@@ -310,7 +356,7 @@ class ExecutionEngine:
         Raises ``RouterError`` after recording failure so the caller can trace.
         """
         try:
-            routed = self.router.select(skill, exclude_agent_ids=exclude)
+            routed = self.router.select(agent_key, exclude_agent_ids=exclude)
         except RouterError as exc:
             self._on_failure(
                 fields,
@@ -332,7 +378,7 @@ class ExecutionEngine:
 
         endpoint = normalize_endpoint(routed.endpoint)
         try:
-            check_skill(skill)
+            check_skill(agent_key)
             check_endpoint(endpoint)
         except SandboxViolation as exc:
             self._on_failure(
@@ -359,18 +405,18 @@ class ExecutionEngine:
     def handle(self, fields: dict[str, str]) -> None:
         task_id = fields["task_id"]
         node_key = fields["node_key"]
-        skill = fields["skill"]
+        agent_key = fields["agent_key"]
         attempt = int(fields.get("attempt") or "1")
         exclude = {x for x in (fields.get("exclude_agent_ids") or "").split(",") if x}
 
-        print(f"[worker] execute task={task_id} node={node_key} skill={skill} attempt={attempt}")
+        print(f"[worker] execute task={task_id} node={node_key} agent_key={agent_key} attempt={attempt}")
 
         # Start tracing span for this operation
         with trace_operation(
             "worker.handle",
             task_id=task_id,
             node_key=node_key,
-            skill=skill,
+            agent_key=agent_key,
             attempt=attempt
         ) as span:
             # Build query: goal + upstream outputs
@@ -387,7 +433,7 @@ class ExecutionEngine:
                     fields=fields,
                     task_id=task_id,
                     node_key=node_key,
-                    skill=skill,
+                    agent_key=agent_key,
                     attempt=attempt,
                     exclude=exclude,
                 )
@@ -398,6 +444,8 @@ class ExecutionEngine:
             if prepared is None:
                 return
             routed, endpoint, idempotency_key = prepared
+
+            self._sync_os(task_id, "running")
 
             # P36.1: Track the request before execution
             tracking_service = self._get_request_tracking_service()
@@ -412,7 +460,7 @@ class ExecutionEngine:
                         task_id,
                         node_id,
                         routed.agent_id,
-                        {"query": query, "skill": skill, "attempt": attempt},
+                        {"query": query, "agent_key": agent_key, "attempt": attempt},
                     )
                     tracking_service.mark_request_running(idempotency_key)
                 except Exception as e:
@@ -438,7 +486,7 @@ class ExecutionEngine:
                         result = self._execute_with_retry(
                             endpoint,
                             query,
-                            skill,
+                            agent_key,
                             idempotency_key=idempotency_key,
                             task_id=task_id,
                             target_agent_id=routed.agent_id,
@@ -448,7 +496,7 @@ class ExecutionEngine:
                         result = self.executor.execute(
                             endpoint,
                             query,
-                            skill_id=skill,
+                            skill_id=agent_key,
                             idempotency_key=idempotency_key,
                             task_id=task_id,
                             correlation_id=task_id,
@@ -476,7 +524,7 @@ class ExecutionEngine:
                             fields=dict(fields),
                             endpoint=endpoint,
                             routed=routed,
-                            skill=skill,
+                            agent_key=agent_key,
                             idempotency_key=idempotency_key,
                             started=started,
                             a2a_task_id=str(result.task.id),
@@ -493,7 +541,7 @@ class ExecutionEngine:
                 self._finalize_node_result(
                     task_id=task_id,
                     node_key=node_key,
-                    skill=skill,
+                    agent_key=agent_key,
                     routed=routed,
                     endpoint=endpoint,
                     result=result,
@@ -533,7 +581,7 @@ class ExecutionEngine:
         fields: dict[str, str],
         endpoint: str,
         routed: Any,
-        skill: str,
+        agent_key: str,
         idempotency_key: str | None,
         started: float,
         a2a_task_id: str,
@@ -555,7 +603,7 @@ class ExecutionEngine:
                 result = ExecutionResult(
                     agent_name=result.agent_name,
                     agent_url=result.agent_url,
-                    skill_id=skill,
+                    skill_id=agent_key,
                     task=result.task,
                     text=result.text,
                     data=result.data,
@@ -563,7 +611,7 @@ class ExecutionEngine:
             self._finalize_node_result(
                 task_id=task_id,
                 node_key=node_key,
-                skill=skill,
+                agent_key=agent_key,
                 routed=routed,
                 endpoint=endpoint,
                 result=result,
@@ -587,7 +635,7 @@ class ExecutionEngine:
         *,
         task_id: str,
         node_key: str,
-        skill: str,
+        agent_key: str,
         routed: Any,
         endpoint: str,
         result: ExecutionResult,
@@ -604,7 +652,7 @@ class ExecutionEngine:
             text=result.text,
             data=result.data,
         )
-        gate = self._quality_gate(skill=skill, text=result.text, data=result.data)
+        gate = self._quality_gate(agent_key=agent_key, text=result.text, data=result.data)
         if not result.ok or not gate["ok"]:
             reason = gate.get("message")
             if not reason:
@@ -628,6 +676,14 @@ class ExecutionEngine:
                 reason = f"a2a status={_task_status_str(result.task.status)}"
                 if detail:
                     reason = f"{reason}: {detail[:500]}"
+            try:
+                from agent_runtime.harness.runners._cli_common import provider_balance_error
+
+                bal = provider_balance_error(reason, result.text)
+                if bal:
+                    reason = bal
+            except ImportError:
+                pass
             raise RuntimeError(reason)
         task_row = self.scheduler.get_task(task_id) or {}
         to_nodes = plan_dependents(task_row.get("plan_json"), node_key)
@@ -637,12 +693,12 @@ class ExecutionEngine:
             to_nodes=to_nodes,
             artifact_ids=artifact_uris_from_refs(refs),
             confidence=conf,
-            skill=skill,
+            agent_key=agent_key,
             agent_id=routed.agent_id,
             reason=(
                 gate.get("reason")
                 or (
-                    f"Completed {skill or node_key}"
+                    f"Completed {agent_key or node_key}"
                     + (f"; unlock {', '.join(to_nodes)}" if to_nodes else "")
                 )
             ),
@@ -704,7 +760,7 @@ class ExecutionEngine:
             self.memory.remember_node(
                 task_id,
                 node_key=node_key,
-                skill=skill,
+                agent_key=agent_key,
                 text=result.text or "",
                 agent_id=routed.agent_id,
             )
@@ -721,6 +777,7 @@ class ExecutionEngine:
                 {"task_id": task_id, "node_key": node_key},
             )
             print(f"[worker] task {task.get('status')} {task_id} at {node_key}")
+            self._sync_os(task_id, str(task.get("status")))
         elif task and task.get("status") == "completed":
             result_json = self.aggregator.build_result(task_id)
             self.streams.publish_task_event(
@@ -731,6 +788,7 @@ class ExecutionEngine:
                 },
             )
             print(f"[worker] task completed {task_id}")
+            self._sync_os(task_id, "completed")
             try:
                 record_task_finished("completed")
             except Exception:  # noqa: BLE001
@@ -765,7 +823,7 @@ class ExecutionEngine:
     ) -> None:
         task_id = fields["task_id"]
         node_key = fields["node_key"]
-        skill = fields["skill"]
+        agent_key = fields["agent_key"]
         node_id = fields.get("node_id") or ""
 
         print(f"[worker] failure node={node_key} attempt={attempt}: {error}")
@@ -793,7 +851,7 @@ class ExecutionEngine:
         
         try:
             record_agent_call(
-                skill or (agent_id or "unknown"),
+                agent_key or (agent_id or "unknown"),
                 status="failed",
                 error_type=error.split(":", 1)[0][:48] or "error",
             )
@@ -822,6 +880,7 @@ class ExecutionEngine:
                 },
             )
             print(f"[worker] node={node_key} cancelled — not retrying")
+            self._sync_os(task_id, "cancelled", error=error)
             return
 
         self.streams.publish_execution_event(
@@ -849,16 +908,18 @@ class ExecutionEngine:
                 task_id=task_id,
                 node_id=node_id or decision.get("node_id") or "",
                 node_key=node_key,
-                skill=skill,
+                agent_key=agent_key,
                 attempt=next_attempt,
                 exclude_agent_ids=sorted(exclude),
                 delay_seconds=delay,
             )
+            self._sync_os(task_id, "retrying", error=error)
         elif decision.get("decision") == "failed":
             try:
                 record_task_finished("failed")
             except Exception:  # noqa: BLE001
                 pass
+            self._sync_os(task_id, "failed", error=error)
             self._auto_evaluate(task_id)
 
     def _auto_evaluate(self, task_id: str) -> None:
@@ -1013,7 +1074,7 @@ class ExecutionEngine:
             raw_slices.append(
                 {
                     "node_key": nid,
-                    "skill": n.get("skill"),
+                    "agent_key": n.get("agent_key"),
                     "reason": (handoff or {}).get("reason") or "",
                     "confidence": (handoff or {}).get("confidence"),
                     "artifact_ids": artifact_candidates,
@@ -1042,7 +1103,7 @@ class ExecutionEngine:
             body = sl.get("body") or ""
             if body:
                 parts.append(
-                    f"\n### {nid} ({sl.get('skill')}){conf_line}{reason_line}{uri_hint}\n{body}"
+                    f"\n### {nid} ({sl.get('agent_key')}){conf_line}{reason_line}{uri_hint}\n{body}"
                 )
             human_text = sl.get("human") or ""
             if human_text:
@@ -1054,13 +1115,34 @@ class ExecutionEngine:
     def _quality_gate(
         self,
         *,
-        skill: str | None,
+        agent_key: str | None,
         text: str | None,
         data: dict | None,
     ) -> dict:
         """Fail-fast before unlocking dependents when upstream research is unusable."""
-        skill_l = (skill or "").lower()
         payload = data if isinstance(data, dict) else {}
+        try:
+            from agent_runtime.harness.runners._cli_common import harness_output_error
+        except ImportError:
+            harness_output_error = lambda *a: None  # noqa: E731
+        extra = " ".join(
+            str(payload.get(k) or "") for k in ("error", "stderr", "message", "status", "ok")
+        )
+        if payload.get("ok") is False:
+            extra = f"{extra} ok=false"
+        if payload.get("stub") is True or (
+            payload.get("hosted") is True and not payload.get("model_invoked")
+        ):
+            extra = f"{extra} hosted stub"
+        obvious = harness_output_error(text, extra)
+        if obvious:
+            return {
+                "ok": False,
+                "status": "error",
+                "confidence": 0.0,
+                "message": obvious,
+                "reason": obvious,
+            }
         status = str(payload.get("status") or "").lower()
         conf_raw = payload.get("confidence")
         try:
@@ -1074,13 +1156,6 @@ class ExecutionEngine:
                 str(payload.get("error") or text or status)
                 [:400]
             )
-            if "search" in skill_l or skill_l in {"web-search", "knowledge-search"}:
-                msg = (
-                    f"Search quality gate: {status}. "
-                    f"{msg or '未找到与主题相关的资料，请确认关键词后重试。'}"
-                )
-            elif "ppt" in skill_l:
-                msg = f"PPT quality gate: {status}. {msg}"
             return {
                 "ok": False,
                 "status": status,
@@ -1089,8 +1164,8 @@ class ExecutionEngine:
                 "reason": msg,
             }
 
-        # Search must return at least one non-empty result when claiming success
-        if skill_l in {"web-search", "knowledge-search"} or skill_l.endswith("-search"):
+        # Search-shaped payloads (results[]) — hop identity is agent_key, not a specialty.
+        if isinstance(payload.get("results"), list):
             results = payload.get("results")
             source = str(payload.get("source") or "").lower()
             if isinstance(results, list) and not results and source not in {"mock"}:
@@ -1154,15 +1229,6 @@ class ExecutionEngine:
                     "message": f"Search results do not mention subject {topic_hint!r}.",
                     "reason": "subject missing from results",
                 }
-
-        if "ppt" in skill_l and status == "insufficient_research":
-            return {
-                "ok": False,
-                "status": status,
-                "confidence": 0.0,
-                "message": str(payload.get("content") or "PPT blocked: insufficient research"),
-                "reason": "ppt insufficient research",
-            }
 
         return {
             "ok": True,

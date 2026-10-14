@@ -76,11 +76,11 @@ class SandboxPolicy:
             allow = None
 
         timeouts: dict[str, float] = {
-            # Research / deep-research skills often exceed the generic A2A default.
-            "web-research": 480.0,
-            "web-search": 480.0,
-            "research-summarize": 300.0,
-            "research": 480.0,
+            "claude-code": 480.0,
+            "deepseek-harness": 480.0,
+            "pi": 480.0,
+            "openclaw": 480.0,
+            "hermes": 480.0,
         }
         for part in os.getenv("AGENT_SKILL_TIMEOUTS", "").split(","):
             part = part.strip()

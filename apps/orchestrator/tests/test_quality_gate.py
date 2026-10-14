@@ -12,7 +12,7 @@ def _engine() -> ExecutionEngine:
 def test_quality_gate_blocks_no_relevant_search():
     eng = _engine()
     gate = eng._quality_gate(
-        skill="web-search",
+        agent_key="claude-code",
         text="No relevant results for: ui2v",
         data={
             "status": "no_relevant_results",
@@ -23,13 +23,13 @@ def test_quality_gate_blocks_no_relevant_search():
     )
     assert gate["ok"] is False
     assert gate["status"] == "no_relevant_results"
-    assert "Search quality gate" in gate["message"]
+    assert "irrelevant SERP" in gate["message"]
 
 
 def test_quality_gate_blocks_serp_junk_heuristic():
     eng = _engine()
     gate = eng._quality_gate(
-        skill="web-search",
+        agent_key="claude-code",
         text=(
             "1. 搜狗 https://www.sogou.com/\n"
             "2. 必应 https://cn.bing.com/\n"
@@ -44,7 +44,7 @@ def test_quality_gate_blocks_serp_junk_heuristic():
 def test_quality_gate_allows_relevant_search():
     eng = _engine()
     gate = eng._quality_gate(
-        skill="web-search",
+        agent_key="claude-code",
         text="Search results for: ui2v\n1. UI2V https://example.com/ui2v\n",
         data={
             "status": "ok",
@@ -63,12 +63,58 @@ def test_quality_gate_allows_relevant_search():
     assert gate["confidence"] == 0.8
 
 
+def test_quality_gate_blocks_provider_402_balance():
+    eng = _engine()
+    gate = eng._quality_gate(
+        agent_key="claude-code",
+        text=(
+            "API Error: 402 Insufficient Balance "
+            "(request_id: 670a32dc-9fa9-4c26-a062-d51e47f65db4)"
+        ),
+        data={"status": "ok"},
+    )
+    assert gate["ok"] is False
+    assert gate["message"] == "余额不足"
+
+
+def test_quality_gate_blocks_api_call_failed():
+    eng = _engine()
+    gate = eng._quality_gate(
+        agent_key="hermes",
+        text="API call failed after 3 retries: Request timed out.",
+        data={"status": "ok"},
+    )
+    assert gate["ok"] is False
+    assert "API call failed" in gate["message"]
+
+
+def test_quality_gate_blocks_openclaw_ok_false():
+    eng = _engine()
+    gate = eng._quality_gate(
+        agent_key="openclaw",
+        text='{"ok": false, "status": "error", "final": ""}',
+        data={"status": "ok"},
+    )
+    assert gate["ok"] is False
+
+
+def test_quality_gate_blocks_hosted_stub():
+    eng = _engine()
+    gate = eng._quality_gate(
+        agent_key="hermes",
+        text="# AOP hosted result\nCompleted by the platform-hosted runner (no external CLI).",
+        data={"hosted": True, "status": "ok"},
+    )
+    assert gate["ok"] is False
+    assert "hosted stub" in gate["message"]
+
+
 def test_quality_gate_blocks_ppt_without_research():
     eng = _engine()
     gate = eng._quality_gate(
-        skill="ppt-generation",
+        agent_key="hermes",
         text="PPT generation blocked",
         data={"status": "insufficient_research", "confidence": 0.0},
     )
     assert gate["ok"] is False
-    assert "PPT quality gate" in gate["message"]
+    assert gate["status"] == "insufficient_research"

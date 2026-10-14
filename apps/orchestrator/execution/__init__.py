@@ -9,7 +9,7 @@ from .state_machine import (
     RecoveryClass,
 )
 from .record import ExecutionRecord, ExecutionRecordStore, PostgresExecutionRecordStore
-from .events import ExecutionEvent, ExecutionEventBus
+from .events import ExecutionEvent, ExecutionEventBus, PostgresExecutionEventBus
 from .retry import RetryPolicy, TimeoutPolicy
 from .policy import CollaborationPolicy, PolicyEngine
 from .service import ExecutionService
@@ -18,6 +18,7 @@ from .factory import build_execution_service
 from .capacity_queue import CapacityQueue
 from .cancel import cancel_fanout
 from .recovery import RecoveryScheduler
+from .dag_bridge import sync_from_dag, try_sync_from_ctx
 
 __all__ = [
     "ExecutionState",
@@ -31,6 +32,7 @@ __all__ = [
     "PostgresExecutionRecordStore",
     "ExecutionEvent",
     "ExecutionEventBus",
+    "PostgresExecutionEventBus",
     "RetryPolicy",
     "TimeoutPolicy",
     "CollaborationPolicy",
@@ -41,4 +43,6 @@ __all__ = [
     "CapacityQueue",
     "cancel_fanout",
     "RecoveryScheduler",
+    "sync_from_dag",
+    "try_sync_from_ctx",
 ]

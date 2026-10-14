@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Optional
@@ -280,6 +282,102 @@ async def emit_event(
     maybe = on_event(ev)
     if asyncio.iscoroutine(maybe):
         await maybe
+
+
+_BALANCE_MSG = "余额不足"
+
+
+def provider_balance_error(*parts: object) -> str | None:
+    """Detect provider 402 / insufficient-balance in CLI or A2A text.
+
+    Claude Code prints ``API Error: 402 Insufficient Balance (request_id: …)``
+    on stdout and often still exits 0; that must not be treated as success.
+    """
+    blob = "\n".join(str(p) for p in parts if p is not None and str(p).strip())
+    if not blob:
+        return None
+    if _BALANCE_MSG in blob:
+        return _BALANCE_MSG
+    lower = blob.lower()
+    if "insufficient balance" in lower or "insufficient_quota" in lower:
+        return _BALANCE_MSG
+    if "payment required" in lower:
+        return _BALANCE_MSG
+    if re.search(r"\b402\b", blob) and (
+        "insufficient" in lower
+        or "api error" in lower
+        or "payment required" in lower
+        or "insufficient_quota" in lower
+    ):
+        return _BALANCE_MSG
+    return None
+
+
+def harness_output_error(*parts: object) -> str | None:
+    """Treat CLI/A2A payloads that are clearly failed as failed, even if exit 0."""
+    balance = provider_balance_error(*parts)
+    if balance:
+        return balance
+    blob = "\n".join(str(p) for p in parts if p is not None and str(p).strip())
+    if not blob:
+        return None
+    stripped = blob.strip()
+    lower = stripped.lower()
+    if stripped.startswith("{") and ("ok" in lower or "status" in lower):
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            if obj.get("ok") is False:
+                return str(obj.get("error") or obj.get("final") or obj.get("status") or "agent error")[:400]
+            st = str(obj.get("status") or "").lower()
+            if st in {"error", "failed"}:
+                return str(obj.get("error") or obj.get("final") or st)[:400]
+        elif '"ok": false' in lower or '"ok":false' in lower:
+            return "agent error"
+    if "api call failed" in lower:
+        return stripped.split("\n", 1)[0][:400]
+    if "returned empty output" in lower:
+        return stripped.split("\n", 1)[0][:400]
+    if (
+        "# aop hosted result" in lower
+        or "platform-hosted runner" in lower
+        or "no external cli" in lower
+        or "hosted stub" in lower
+        or "未执行真实推理" in stripped
+    ):
+        return "未执行真实推理（hosted stub）"
+    return None
+
+
+def apply_provider_balance_failure(result: Any) -> Any:
+    """If ``result`` carries a 402/balance or other obvious CLI failure, coerce failed."""
+    from ..protocol import HarnessStatus
+
+    extra = None
+    data = getattr(result, "data", None)
+    if isinstance(data, dict):
+        extra = " ".join(
+            str(data.get(k) or "")
+            for k in ("error", "stderr", "message", "status", "ok")
+        )
+        if data.get("ok") is False:
+            extra = extra + " ok=false"
+        if data.get("stub") is True or (
+            data.get("hosted") is True and not data.get("model_invoked")
+        ):
+            extra = extra + " hosted stub"
+    msg = harness_output_error(
+        getattr(result, "error", None),
+        getattr(result, "text", None),
+        extra,
+    )
+    if not msg:
+        return result
+    result.status = HarnessStatus.FAILED
+    result.error = msg
+    return result
 
 
 # Default asyncio.StreamReader limit is 64KiB; Pi/Claude JSONL tool payloads often exceed it.

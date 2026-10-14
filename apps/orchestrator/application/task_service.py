@@ -20,6 +20,7 @@ from scheduler.engine import SchedulingEngine
 from streams import StreamClient
 from workflows import WorkflowService
 from aggregator import Aggregator
+from execution.dag_bridge import try_sync_from_ctx
 
 from .task_manager import TaskManager
 
@@ -84,7 +85,8 @@ class TaskService:
         )
 
     def get(self, task_id: str, *, tenant_id: str | None = None) -> dict[str, Any] | None:
-        return self.tasks.get(task_id, tenant_id=tenant_id)
+        row = self.tasks.get(task_id, tenant_id=tenant_id)
+        return self._with_os_state(row) if row else None
 
     def list(
         self,
@@ -93,10 +95,58 @@ class TaskService:
         limit: int = 50,
         tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return self.tasks.list(status=status, limit=limit, tenant_id=tenant_id)
+        tasks = self.tasks.list(status=status, limit=limit, tenant_id=tenant_id)
+        return self._decorate_os_states(tasks)
+
+    def _decorate_os_states(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ids = [str(t.get("task_id") or t.get("id") or "") for t in tasks]
+        ids = [i for i in ids if i]
+        states = self._os_states(ids)
+        out: list[dict[str, Any]] = []
+        for t in tasks:
+            row = dict(t)
+            tid = str(row.get("task_id") or row.get("id") or "")
+            os_state = states.get(tid)
+            if os_state:
+                row["os_state"] = os_state
+            out.append(row)
+        return out
+
+    def _with_os_state(self, row: dict[str, Any]) -> dict[str, Any]:
+        out = dict(row)
+        tid = str(out.get("task_id") or out.get("id") or "")
+        if not tid:
+            return out
+        states = self._os_states([tid])
+        os_state = states.get(tid)
+        if os_state:
+            out["os_state"] = os_state
+        return out
+
+    def _os_states(self, task_ids: list[str]) -> dict[str, str]:
+        exec_svc = getattr(self, "execution", None)
+        if exec_svc is None:
+            try:
+                from app_context import ctx
+
+                exec_svc = ctx.execution
+            except Exception:  # noqa: BLE001
+                exec_svc = None
+        fn = getattr(exec_svc, "states_for_tasks", None) if exec_svc else None
+        if not callable(fn):
+            return {}
+        try:
+            return fn(task_ids) or {}
+        except Exception:  # noqa: BLE001
+            return {}
 
     def cancel(self, task_id: str) -> dict[str, Any] | None:
         return self.tasks.cancel(task_id)
+
+    def requeue_incomplete(self, task_id: str) -> dict[str, Any]:
+        out = self.scheduling.requeue_incomplete(task_id)
+        try_sync_from_ctx(task_id, "running")
+        return out
 
     def approve(
         self,
@@ -321,7 +371,7 @@ class TaskService:
                     {
                         "node_key": key,
                         "task_id": tid,
-                        "skill": node.get("skill") or src.get("skill"),
+                        "agent_key": node.get("agent_key") or src.get("agent_key"),
                         "status": node.get("status") or src.get("status"),
                         "reason": node.get("handoff_reason") or ho.get("reason"),
                         "from": ho.get("from") or key,
@@ -387,7 +437,7 @@ class TaskService:
         out = dict(row)
         out["collaboration_graph"] = graph
         out["runtime_graph"] = self.runtime_graph.get_graph(task_id)
-        return out
+        return self._with_os_state(out)
 
     def agent_performance(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self.router.agent_performance(limit=limit)

@@ -38,6 +38,10 @@ _NODE_BAD = frozenset({"failed", "cancelled"})
 
 # Missing CLI / SDK / API key — retrying will not help.
 _PERMANENT_ERROR_MARKERS = (
+    "余额不足",
+    "insufficient balance",
+    "insufficient_quota",
+    "payment required",
     "unavailable",
     "not found",
     "pi cli not found",
@@ -160,7 +164,7 @@ class Scheduler:
                 )
 
                 node_rows: dict[str, str] = {}  # node_key -> uuid
-                skill_by_key = {n.id: n.skill for n in plan.nodes}
+                agent_by_key = {n.id: n.agent_key for n in plan.nodes}
                 for node in plan.nodes:
                     node_uuid = str(uuid.uuid4())
                     node_rows[node.id] = node_uuid
@@ -170,7 +174,7 @@ class Scheduler:
                     conn.execute(
                         """
                         INSERT INTO task_nodes (
-                          id, task_id, node_key, skill, status, input_json,
+                          id, task_id, node_key, agent_key, status, input_json,
                           attempt, max_retry, idempotency_key, created_at, updated_at
                         ) VALUES (
                           %s::uuid, %s::uuid, %s, %s, 'pending', %s::jsonb,
@@ -181,7 +185,7 @@ class Scheduler:
                             node_uuid,
                             task_id,
                             node.id,
-                            node.skill,
+                            node.agent_key,
                             Jsonb(
                                 {
                                     "goal": goal,
@@ -189,7 +193,7 @@ class Scheduler:
                                     "instruction": (
                                         (node.instruction or "").strip() or goal
                                     ),
-                                    "agent_key": node.skill,
+                                    "agent_key": node.agent_key,
                                 }
                             ),
                             node_idempotency_key,
@@ -228,7 +232,7 @@ class Scheduler:
                         node_rows[key],
                         "task.node.ready",
                         f"Node {key} ready",
-                        {"node_key": key, "skill": skill_by_key[key]},
+                        {"node_key": key, "agent_key": agent_by_key[key]},
                     )
 
                 status = "running" if ready_keys else "planning"
@@ -255,7 +259,7 @@ class Scheduler:
                         "task_id": task_id,
                         "node_id": node_rows[key],
                         "node_key": key,
-                        "skill": skill_by_key[key],
+                        "agent_key": agent_by_key[key],
                         "attempt": 1,
                     }
                     for key in ready_keys
@@ -273,7 +277,7 @@ class Scheduler:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id::text AS node_id, node_key, skill, status, attempt, max_retry,
+                SELECT id::text AS node_id, node_key, agent_key, status, attempt, max_retry,
                        assigned_agent_id::text AS agent_id, input_json, output_json,
                        error_message
                 FROM task_nodes
@@ -342,7 +346,7 @@ class Scheduler:
                 now = _utc_now()
                 rows = conn.execute(
                     """
-                    SELECT tn.id::text AS node_id, tn.task_id::text AS task_id, tn.node_key, tn.skill,
+                    SELECT tn.id::text AS node_id, tn.task_id::text AS task_id, tn.node_key, tn.agent_key,
                            tn.attempt, tn.max_retry, tn.assigned_agent_id::text AS agent_id
                     FROM task_nodes tn
                     JOIN tasks t ON t.id = tn.task_id
@@ -431,11 +435,139 @@ class Scheduler:
                             "task_id": row["task_id"],
                             "node_id": row["node_id"],
                             "node_key": row["node_key"],
-                            "skill": row["skill"],
+                            "agent_key": row["agent_key"],
                             "attempt": next_attempt,
                             "exclude_agent_ids": [row["agent_id"]] if row.get("agent_id") else [],
                         }
                     )
+                return jobs
+
+    def requeue_incomplete(self, task_id: str) -> list[dict[str, Any]]:
+        """Operator recover: re-enqueue ready/retrying work; unlock pending; reclaim running.
+
+        Does not resurrect cancelled/completed tasks. Failed tasks are set back to
+        running and their failed nodes become retrying.
+        """
+        with self._connect() as conn:
+            with conn.transaction():
+                now = _utc_now()
+                row = conn.execute(
+                    """
+                    SELECT id::text AS task_id, status
+                    FROM tasks WHERE id = %s::uuid FOR UPDATE
+                    """,
+                    (task_id,),
+                ).fetchone()
+                if not row:
+                    return []
+                status = row["status"]
+                if status in ("cancelled", "completed"):
+                    return []
+                if status == "failed":
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'running',
+                            error_message = NULL,
+                            finished_at = NULL,
+                            updated_at = %s
+                        WHERE id = %s::uuid
+                        """,
+                        (now, task_id),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE task_nodes
+                        SET status = 'retrying',
+                            error_message = NULL,
+                            finished_at = NULL,
+                            updated_at = %s
+                        WHERE task_id = %s::uuid AND status = 'failed'
+                        """,
+                        (now, task_id),
+                    )
+                    self._append_event(
+                        conn,
+                        task_id,
+                        None,
+                        "task.requeued",
+                        "failed task requeued by operator recover",
+                        {},
+                    )
+
+                jobs: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                try:
+                    plan = self._load_plan(conn, task_id)
+                except Exception:  # noqa: BLE001
+                    plan = None
+                if plan is not None:
+                    for job in self._unlock_dependents(conn, task_id, plan, now):
+                        jobs.append(job)
+                        seen.add(job["node_key"])
+
+                running = conn.execute(
+                    """
+                    SELECT id::text AS node_id, node_key, agent_key, attempt,
+                           assigned_agent_id::text AS agent_id
+                    FROM task_nodes
+                    WHERE task_id = %s::uuid AND status = 'running'
+                    FOR UPDATE
+                    """,
+                    (task_id,),
+                ).fetchall()
+                for n in running:
+                    conn.execute(
+                        """
+                        UPDATE task_nodes
+                        SET status = 'retrying',
+                            error_message = COALESCE(error_message, 'operator recover'),
+                            updated_at = %s
+                        WHERE id = %s::uuid
+                        """,
+                        (now, n["node_id"]),
+                    )
+                    self._append_event(
+                        conn,
+                        task_id,
+                        n["node_id"],
+                        "task.node.requeued",
+                        f"Node {n['node_key']} requeued by operator recover",
+                        {"from": "running"},
+                    )
+                    jobs.append(
+                        {
+                            "task_id": task_id,
+                            "node_id": n["node_id"],
+                            "node_key": n["node_key"],
+                            "agent_key": n["agent_key"],
+                            "attempt": int(n["attempt"] or 1),
+                            "exclude_agent_ids": [n["agent_id"]] if n.get("agent_id") else [],
+                        }
+                    )
+                    seen.add(n["node_key"])
+
+                waiting = conn.execute(
+                    """
+                    SELECT id::text AS node_id, node_key, agent_key, attempt
+                    FROM task_nodes
+                    WHERE task_id = %s::uuid AND status IN ('ready', 'retrying')
+                    """,
+                    (task_id,),
+                ).fetchall()
+                for n in waiting:
+                    if n["node_key"] in seen:
+                        continue
+                    jobs.append(
+                        {
+                            "task_id": task_id,
+                            "node_id": n["node_id"],
+                            "node_key": n["node_key"],
+                            "agent_key": n["agent_key"],
+                            "attempt": int(n["attempt"] or 1),
+                        }
+                    )
+                    seen.add(n["node_key"])
                 return jobs
 
     def claim_running(self, task_id: str, node_key: str, agent_id: str, attempt: int) -> bool:
@@ -533,7 +665,7 @@ class Scheduler:
                         updated_at = %s
                     WHERE task_id = %s::uuid AND node_key = %s
                       AND status IN ('ready', 'running', 'retrying')
-                    RETURNING id::text AS node_id, skill, assigned_agent_id::text AS agent_id,
+                    RETURNING id::text AS node_id, agent_key, assigned_agent_id::text AS agent_id,
                               attempt, input_json
                     """,
                     (target_status, Jsonb(stored_output), now, now, task_id, node_key),
@@ -551,7 +683,7 @@ class Scheduler:
                     snapshot=self._build_checkpoint_snapshot(
                         status=target_status,
                         attempt=int(node.get("attempt") or 1),
-                        skill=node.get("skill"),
+                        agent_key=node.get("agent_key"),
                         output=output,
                         input_json=node.get("input_json"),
                     ),
@@ -633,7 +765,7 @@ class Scheduler:
                         f"Task paused for {policy.mode} approval at {node_key}",
                         {
                             "node_key": node_key,
-                            "skill": node.get("skill"),
+                            "agent_key": node.get("agent_key"),
                             "approval_mode": policy.mode,
                             "approver_agent": policy.approver_agent,
                         },
@@ -657,7 +789,7 @@ class Scheduler:
                 now = _utc_now()
                 row = conn.execute(
                     """
-                    SELECT tn.id::text AS node_id, tn.max_retry, tn.skill, tn.attempt,
+                    SELECT tn.id::text AS node_id, tn.max_retry, tn.agent_key, tn.attempt,
                            tn.input_json, tn.output_json, tn.status AS node_status,
                            t.status AS task_status
                     FROM task_nodes tn
@@ -758,7 +890,7 @@ class Scheduler:
                     snapshot=self._build_checkpoint_snapshot(
                         status=fail_status,
                         attempt=int(attempt or 1),
-                        skill=row.get("skill"),
+                        agent_key=row.get("agent_key"),
                         output=out or None,
                         error=error,
                         input_json=row.get("input_json"),
@@ -873,7 +1005,7 @@ class Scheduler:
                 if node_key:
                     node = conn.execute(
                         """
-                        SELECT id::text AS node_id, node_key, skill, status, output_json
+                        SELECT id::text AS node_id, node_key, agent_key, status, output_json
                         FROM task_nodes
                         WHERE task_id = %s::uuid AND node_key = %s
                         """,
@@ -882,7 +1014,7 @@ class Scheduler:
                 else:
                     node = conn.execute(
                         """
-                        SELECT id::text AS node_id, node_key, skill, status, output_json
+                        SELECT id::text AS node_id, node_key, agent_key, status, output_json
                         FROM task_nodes
                         WHERE task_id = %s::uuid
                           AND status IN ('waiting_for_user', 'waiting_for_agent')
@@ -943,7 +1075,7 @@ class Scheduler:
                     snapshot=self._build_checkpoint_snapshot(
                         status=next_status,
                         attempt=1,
-                        skill=node.get("skill"),
+                        agent_key=node.get("agent_key"),
                         output=merged,
                     ),
                 )
@@ -1131,7 +1263,7 @@ class Scheduler:
                 now = _utc_now()
                 node = conn.execute(
                     """
-                    SELECT id::text AS node_id, node_key, skill, status, attempt,
+                    SELECT id::text AS node_id, node_key, agent_key, status, attempt,
                            max_retry, checkpoint_json, checkpoint_attempt
                     FROM task_nodes
                     WHERE task_id = %s::uuid AND node_key = %s
@@ -1188,7 +1320,8 @@ class Scheduler:
                                 updated_at = %s
                             WHERE task_id = %s::uuid AND node_key = %s
                               AND status IN ('pending','ready','success','failed',
-                                             'retrying','waiting_for_user','running')
+                                             'retrying','waiting_for_user','running',
+                                             'cancelled')
                             RETURNING node_key
                             """,
                             (now, task_id, dep_key),
@@ -1240,7 +1373,7 @@ class Scheduler:
                     "task_id": task_id,
                     "node_id": node["node_id"],
                     "node_key": node_key,
-                    "skill": node["skill"],
+                    "agent_key": node["agent_key"],
                     "attempt": next_attempt,
                 }
                 return {
@@ -1350,7 +1483,7 @@ class Scheduler:
         completed = {r["id"] for r in rows if r["status"] == "success"}
         pending = {r["id"] for r in rows if r["status"] == "pending"}
         newly = ready_node_ids(plan.nodes, completed=completed, pending=pending)
-        skill_by_key = {n.id: n.skill for n in plan.nodes}
+        agent_by_key = {n.id: n.agent_key for n in plan.nodes}
         ready_jobs: list[dict[str, Any]] = []
         for key in newly:
             updated = conn.execute(
@@ -1370,14 +1503,14 @@ class Scheduler:
                 updated["node_id"],
                 "task.node.ready",
                 f"Node {key} ready",
-                {"node_key": key, "skill": skill_by_key[key]},
+                {"node_key": key, "agent_key": agent_by_key[key]},
             )
             ready_jobs.append(
                 {
                     "task_id": task_id,
                     "node_id": updated["node_id"],
                     "node_key": key,
-                    "skill": skill_by_key[key],
+                    "agent_key": agent_by_key[key],
                     "attempt": 1,
                 }
             )
@@ -1861,19 +1994,19 @@ class Scheduler:
         rows = conn.execute(
             """
             SELECT tn.node_key AS id,
-                   tn.skill,
                    tn.status,
                    tn.assigned_agent_id::text AS agent_id,
                    COALESCE(
                      tn.output_json->'agent'->>'key',
                      a.agent_key,
-                     tn.skill
+                     tn.agent_key
                    ) AS agent_key,
-                   COALESCE(a.name, tn.output_json->'agent'->>'key', tn.skill) AS agent_name,
+                   COALESCE(a.name, tn.output_json->'agent'->>'key', tn.agent_key) AS agent_name,
                    tn.output_json->'agent'->>'endpoint' AS agent_endpoint,
                    tn.output_json->>'a2a_task_id' AS a2a_task_id,
                    tn.attempt,
                    tn.error_message,
+                   LEFT(COALESCE(tn.output_json->>'text', ''), 800) AS output_excerpt,
                    tn.output_json->'handoff' AS handoff,
                    tn.output_json->'hitl' AS hitl,
                    tn.checkpoint_at,
@@ -1988,7 +2121,7 @@ class Scheduler:
         *,
         status: str,
         attempt: int,
-        skill: str | None = None,
+        agent_key: str | None = None,
         output: dict[str, Any] | None = None,
         error: str | None = None,
         input_json: Any = None,
@@ -2012,7 +2145,7 @@ class Scheduler:
         return {
             "status": status,
             "attempt": int(attempt or 1),
-            "skill": skill,
+            "agent_key": agent_key,
             "input_summary": input_summary,
             "output_preview": text_preview,
             "artifact_ids": arts,
@@ -2151,7 +2284,7 @@ class Scheduler:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id::text, task_id::text, node_key, skill, status, idempotency_key
+                SELECT id::text, task_id::text, node_key, agent_key, status, idempotency_key
                 FROM task_nodes
                 WHERE task_id = %s::uuid AND node_key = %s
                 """,

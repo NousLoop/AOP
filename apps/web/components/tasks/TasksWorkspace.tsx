@@ -284,6 +284,11 @@ export function TasksWorkspace({ initialTaskId }: { initialTaskId?: string }) {
                       : t.status}
                 </span>
               </div>
+              {t.os_state ? (
+                <div className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.12em] text-mist-500">
+                  os {t.os_state}
+                </div>
+              ) : null}
               <div className="mt-1 truncate text-sm text-mist-100">
                 {t.title || "Untitled task"}
               </div>

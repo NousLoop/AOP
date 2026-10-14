@@ -186,10 +186,10 @@ export function CommandCenter() {
     try {
       const task = await createTask(content);
       setTaskId(task.task_id);
+      setLoading(false);
       router.replace(`/?task=${encodeURIComponent(task.task_id)}`);
     } catch (err) {
       setError(apiErrorMessage(err, "创建任务失败"));
-    } finally {
       setLoading(false);
     }
   }
@@ -513,7 +513,7 @@ export function CommandCenter() {
             disabled={loading || !goal.trim() || runBlocked}
             className="shrink-0 rounded-xl bg-signal px-5 py-3 font-mono text-xs font-semibold uppercase tracking-[0.18em] text-ink-950 transition hover:bg-white disabled:opacity-40"
           >
-            {loading ? "…" : runBlocked ? "Blocked" : "Run →"}
+            {loading ? "Planning…" : runBlocked ? "Blocked" : "Run →"}
           </button>
         </form>
       </div>
