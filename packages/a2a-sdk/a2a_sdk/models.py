@@ -266,7 +266,9 @@ class Task:
         error = None
         if isinstance(status_raw, dict):
             msg = status_raw.get("message")
-            if isinstance(msg, dict):
+            if isinstance(msg, str) and msg.strip():
+                error = msg.strip()
+            elif isinstance(msg, dict):
                 parts = msg.get("parts") or []
                 texts = [
                     p.get("text")
@@ -276,6 +278,10 @@ class Task:
                 error = "\n".join(texts) if texts else None
 
         meta = dict(raw.get("metadata") or {})
+        if not error:
+            meta_err = meta.get("error")
+            if isinstance(meta_err, str) and meta_err.strip():
+                error = meta_err.strip()
 
         def pick(*keys: str) -> Any:
             for k in keys:

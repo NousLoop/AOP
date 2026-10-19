@@ -3,12 +3,15 @@ module github.com/aop/a2a-platform/apps/gateway
 go 1.22
 
 require (
+	github.com/aop/a2a-platform/packages/catalogs v0.0.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/prometheus/client_golang v1.19.0
 	github.com/redis/go-redis/v9 v9.7.0
 	golang.org/x/crypto v0.31.0
 )
+
+replace github.com/aop/a2a-platform/packages/catalogs => ../../packages/catalogs
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

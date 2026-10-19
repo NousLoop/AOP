@@ -123,14 +123,22 @@ $env:HARNESS_LIVE_PREVIEW="1"
 
 ## Edge Node（推荐本机路径）
 
-本机用 [`apps/client/aop-node`](../../apps/client/aop-node) 的 `aopd` Supervisor 拉起 harness、向 Gateway 注册、并向 Orchestrator 发生命周期心跳。子进程只跑 A2A；`AOP_NODE_MANAGED=1` 时关闭子进程自心跳。
+本机用 [`apps/client/aop-node`](../../apps/client/aop-node) 的 `aopd` Supervisor：
+
+- `plugins/*/plugin.toml` 使用 **`kind = "cli"`**，`command` 为厂家二进制（`claude` / `dsh` / `pi` / `openclaw` / `hermes`）
+- **A2A HTTP 由 aopd 在单一端口托管**（`cli_a2a_listen`，默认 `127.0.0.1:8020`，路径 `/agents/<plugin-id>/`；不再长期 spawn `python … harness-agent`）
+- 任务执行时短生命周期 spawn 厂家 CLI；`/health` 的 `runner_ready` 表示本机能否解析该 CLI
+- 向 Gateway 注册各 endpoint，并向 Orchestrator 发节点 + agent 生命周期心跳
+
+无 aopd 的 standalone/dev 仍可用 `agents/harness-agent` + `_harness/launch.py`。
 
 | 变量 | 含义 |
 |------|------|
 | `CLAUDE_CLI_ALLOWED_TOOLS` | Comma list for `--allowed-tools` (default includes WebSearch/WebFetch); `none` to omit |
 | `A2A_OS_URL` / `GATEWAY_URL` | Heartbeat + optional cost POST |
-| `AOP_NODE_MANAGED` | `1` → harness 不自心跳（aopd 代发） |
-| `HARNESS_HEARTBEAT` | 无 aop-node 时默认 `1`；aopd 子进程强制 `0` |
+| `AOP_NODE_MANAGED` | standalone harness-agent 下：`1` → 不自心跳（aopd 代发）；`kind=cli` 时 A2A 已在 aopd 内，无需此变量 |
+| `HARNESS_HEARTBEAT` | 无 aop-node 时默认 `1` |
+| `*_CLI_PATH` | 覆盖厂家 CLI 路径（`CLAUDE_CLI_PATH` / `OPENCLAW_CLI_PATH` / …） |
 
 ## Remote install (Claude Code–style)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register harness virtual agents to Gateway (docker single-node)."""
+"""Register aopd-hosted harness agents to Gateway (docker / host)."""
 
 from __future__ import annotations
 
@@ -17,14 +17,42 @@ API_KEY = (
     or ""
 )
 
-# (name, endpoint env, default URL)
-AGENTS = [
-    ("claude-code", "AOP_AGENT_CLAUDE_CODE_URL", "http://claude-code:8011"),
-    ("deepseek-harness", "AOP_AGENT_DEEPSEEK_HARNESS_URL", "http://deepseek-harness:8012"),
-    ("pi", "AOP_AGENT_PI_URL", "http://pi:8013"),
-    ("openclaw", "AOP_AGENT_OPENCLAW_URL", "http://openclaw:8014"),
-    ("hermes", "AOP_AGENT_HERMES_URL", "http://hermes:8015"),
-]
+# Base for shared CLI A2A (aopd). Override when aopd is reachable under another host.
+CLI_A2A_BASE = (
+    os.getenv("AOP_CLI_A2A_BASE")
+    or os.getenv("AOP_AGENT_AOPD_BASE")
+    or "http://host.docker.internal:8020"
+).rstrip("/")
+
+
+def _agents() -> list[tuple[str, str, str]]:
+    """(name, env_key, default_endpoint)."""
+    try:
+        from agent_runtime.harness.profiles import HARNESS_PROFILES
+
+        out: list[tuple[str, str, str]] = []
+        for p in HARNESS_PROFILES:
+            name = p.plugin_id or p.key
+            path = p.path or f"/agents/{name}"
+            if not path.startswith("/"):
+                path = f"/{path}"
+            out.append((name, p.env_url_key, f"{CLI_A2A_BASE}{path}"))
+        return out
+    except ImportError:  # pragma: no cover
+        return [
+            ("claude-code", "AOP_AGENT_CLAUDE_CODE_URL", f"{CLI_A2A_BASE}/agents/claude-code"),
+            (
+                "deepseek-harness",
+                "AOP_AGENT_DEEPSEEK_HARNESS_URL",
+                f"{CLI_A2A_BASE}/agents/deepseek-harness",
+            ),
+            ("pi", "AOP_AGENT_PI_URL", f"{CLI_A2A_BASE}/agents/pi"),
+            ("openclaw", "AOP_AGENT_OPENCLAW_URL", f"{CLI_A2A_BASE}/agents/openclaw"),
+            ("hermes", "AOP_AGENT_HERMES_URL", f"{CLI_A2A_BASE}/agents/hermes"),
+        ]
+
+
+AGENTS = _agents()
 
 
 def wait(url: str, timeout: float = 120.0) -> None:
@@ -47,7 +75,7 @@ def _headers() -> dict[str, str]:
 
 
 def main() -> int:
-    print(f"gateway={GATEWAY} auth={'on' if API_KEY else 'off'}")
+    print(f"gateway={GATEWAY} auth={'on' if API_KEY else 'off'} base={CLI_A2A_BASE}")
     wait(f"{GATEWAY}/health")
     for name, env_key, default in AGENTS:
         ep = (os.getenv(env_key) or default).rstrip("/")

@@ -40,13 +40,7 @@ try:
 
     DEFAULT_PORTS: dict[str, int] = _default_ports()
 except ImportError:  # pragma: no cover
-    DEFAULT_PORTS = {
-        "claude-code": 8011,
-        "deepseek-harness": 8012,
-        "pi": 8013,
-        "openclaw": 8014,
-        "hermes": 8015,
-    }
+    DEFAULT_PORTS = {}
 
 HARNESS_BY_PREFIX: tuple[tuple[str, str], ...] = (
     ("pi", "pi_cli"),
@@ -81,7 +75,15 @@ def harness_for_profile(profile: str) -> str:
 
 
 def default_port_for_profile(profile: str) -> int:
-    return DEFAULT_PORTS.get(profile, 8011)
+    """Shared aopd listen port (not a per-agent bind)."""
+    if profile in DEFAULT_PORTS:
+        return int(DEFAULT_PORTS[profile])
+    try:
+        from agent_runtime.harness.profiles import CLI_A2A_LISTEN
+
+        return int(str(CLI_A2A_LISTEN).rsplit(":", 1)[-1])
+    except Exception:  # noqa: BLE001
+        return 8020
 
 
 def resolve_package_meta(
@@ -95,7 +97,11 @@ def resolve_package_meta(
         pkg = dict(packages[package_id])
     if pkg is None:
         for item in catalog:
-            if item.get("package_id") == package_id or item.get("agent_key") == package_id:
+            if (
+                item.get("package_id") == package_id
+                or item.get("agent_key") == package_id
+                or item.get("plugin_id") == package_id
+            ):
                 pkg = dict(item)
                 break
     if not pkg:
@@ -104,17 +110,23 @@ def resolve_package_meta(
     agent_key = str(pkg.get("agent_key") or pkg.get("profile") or package_id)
     if agent_key.startswith("pkg-"):
         agent_key = agent_key[4:]
-    profile = str(pkg.get("profile") or agent_key)
+    plugin_id = str(pkg.get("plugin_id") or "").strip()
+    # Filesystem profile under agents/harness-agent/profiles/ is the plugin id
+    # (claude-code), not the registry key (aopd-claude-code).
+    profile = str(pkg.get("profile") or plugin_id or agent_key)
+    if profile.startswith("aopd-") and not plugin_id:
+        profile = profile[len("aopd-") :]
     harness = str(pkg.get("harness") or harness_for_profile(profile))
     version = str(pkg.get("version") or "0.1.0")
-    port = int(pkg.get("default_port") or default_port_for_profile(profile))
+    port = int(pkg.get("default_port") or default_port_for_profile(agent_key))
     skills = list(pkg.get("skills") or [])
-    name = str(pkg.get("name") or profile)
-    description = str(pkg.get("description") or f"Virtual agent: {profile}")
+    name = str(pkg.get("name") or agent_key)
+    description = str(pkg.get("description") or f"Virtual agent: {agent_key}")
     return {
         **pkg,
-        "package_id": pkg.get("package_id") or f"pkg-{profile}",
+        "package_id": pkg.get("package_id") or f"pkg-{agent_key}",
         "agent_key": agent_key,
+        "plugin_id": plugin_id or profile,
         "profile": profile,
         "harness": harness,
         "version": version,

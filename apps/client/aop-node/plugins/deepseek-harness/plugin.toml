@@ -1,18 +1,14 @@
 id = "deepseek-harness"
 version = "0.1.0"
-kind = "agent"
-command = "python"
-args = ["-u", "../_harness/run_profile.py"]
+kind = "cli"
+command = "dsh"
+args = []
 workdir = "."
-health_url = "http://127.0.0.1:8022/health"
-description = "aopd DeepSeek Harness (plugin → agents/harness-agent)"
+description = "aopd DeepSeek Harness — shared A2A port /agents/deepseek-harness; tasks spawn manufacturer dsh CLI"
 
 [env]
-PORT = "8022"
-AGENT_URL = "http://127.0.0.1:8022/"
 HARNESS_PROFILE = "deepseek-harness"
 AGENT_ID = "aopd-deepseek-harness"
 AGENT_DISPLAY_NAME = "aopd DeepSeek Harness"
-AOP_NODE_MANAGED = "1"
-HARNESS_HEARTBEAT = "0"
 HARNESS_RUNNER = "deepseek"
+# Optional: DSH_CLI_PATH=/path/to/dsh  DSH_HOME=~/.aop/dsh-home

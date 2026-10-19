@@ -122,7 +122,7 @@ Orchestrator 投递 `/v1/approvals` 超时 3s、失败只记事件，**节点仍
 
 1. `packages/agent-runtime/agent_runtime/harness/profiles.py` 加一行（key / 端口 / runner）
 2. `agents/harness-agent/profiles/<key>/`：`agent-card.json`、`system.md`
-3. 如需本机 Supervisor：`apps/client/aop-node/plugins/<key>/plugin.toml`（端口与 profiles 表一致）
+3. 如需本机 Supervisor：`apps/client/aop-node/plugins/<key>/plugin.toml`（`kind = "cli"`，端口与 profiles 表一致；A2A/`/v1/approvals` 由 aopd 托管）
 4. 注册到 Gateway 后 `agent_key` = profile key（审批里写这个）
 5. 环境变量（见下）指向 Gateway，否则回调失败
 

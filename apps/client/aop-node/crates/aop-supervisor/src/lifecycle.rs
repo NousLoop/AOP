@@ -1,18 +1,20 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use aop_core::{
-    discover_plugins, AgentSpec, Config, ExecRequest, PluginManifest, Whitelist,
+    discover_plugins, AgentSpec, Config, ExecRequest, PluginKind, PluginManifest, Whitelist,
 };
 use aop_os::{read_log_tail, ChildHandle, LogHub, ProcessManager, SpawnSpec};
 
+use crate::cli_a2a::{CliAgentHub, CliAgentSpec};
 use crate::os_client::OsClient;
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,11 +31,13 @@ pub struct StatusSnapshot {
 #[derive(Clone)]
 struct Planned {
     id: String,
+    kind: PluginKind,
     command: String,
     args: Vec<String>,
     env: HashMap<String, String>,
     workdir: Option<PathBuf>,
     health_url: Option<String>,
+    plugin_root: Option<PathBuf>,
 }
 
 pub struct Supervisor {
@@ -41,6 +45,7 @@ pub struct Supervisor {
     pub whitelist: Whitelist,
     pub processes: Arc<ProcessManager>,
     pub logs: LogHub,
+    pub cli_hub: Arc<CliAgentHub>,
     pub os: RwLock<OsClient>,
     pub registered: RwLock<bool>,
     planned: RwLock<HashMap<String, Planned>>,
@@ -52,6 +57,11 @@ impl Supervisor {
     pub fn new(cfg: Config) -> Result<Arc<Self>> {
         let logs = LogHub::new(cfg.log_path())?;
         let processes = ProcessManager::new(logs.clone());
+        let cli_listen: SocketAddr = cfg
+            .cli_a2a_listen
+            .parse()
+            .with_context(|| format!("invalid cli_a2a_listen {}", cfg.cli_a2a_listen))?;
+        let cli_hub = CliAgentHub::new(logs.clone(), cli_listen)?;
         let whitelist = Whitelist::from_config(&cfg.whitelist);
         let os = OsClient::new(&cfg)?;
         Ok(Arc::new(Self {
@@ -59,6 +69,7 @@ impl Supervisor {
             whitelist,
             processes,
             logs,
+            cli_hub,
             os: RwLock::new(os),
             registered: RwLock::new(false),
             planned: RwLock::new(HashMap::new()),
@@ -128,10 +139,12 @@ impl Supervisor {
             map.insert(a.id.clone(), planned_from_agent(a));
         }
         for (root, m) in discover_plugins(&self.cfg.plugins_path())? {
-            map.insert(
-                m.id.clone(),
-                planned_from_manifest(&m, &root),
-            );
+            let mut planned = planned_from_manifest(&m, &root);
+            // kind=cli shares one port; health/register URL is path-routed.
+            if planned.kind.is_cli() {
+                planned.health_url = Some(self.cfg.cli_agent_health_url(&planned.id));
+            }
+            map.insert(m.id.clone(), planned);
         }
         *self.planned.write().await = map;
         Ok(())
@@ -156,6 +169,10 @@ impl Supervisor {
             .cloned()
             .ok_or_else(|| anyhow!("unknown agent/plugin {id}"))?;
 
+        if planned.kind.is_cli() {
+            return self.start_cli_child(&planned).await;
+        }
+
         // Already up (e.g. started outside aopd) — adopt without re-binding the port.
         if let Some(health) = &planned.health_url {
             let os = self.os.read().await;
@@ -168,7 +185,10 @@ impl Supervisor {
                     args: planned.args.clone(),
                     running: true,
                 };
-                self.adopted.write().await.insert(id.to_string(), handle.clone());
+                self.adopted
+                    .write()
+                    .await
+                    .insert(id.to_string(), handle.clone());
                 return Ok(handle);
             }
         }
@@ -202,21 +222,58 @@ impl Supervisor {
         self.processes.spawn(spec).await
     }
 
+    async fn start_cli_child(&self, planned: &Planned) -> Result<ChildHandle> {
+        if self.cli_hub.is_running(&planned.id).await {
+            let list = self.cli_hub.list().await;
+            if let Some(h) = list.into_iter().find(|h| h.id == planned.id) {
+                return Ok(h);
+            }
+        }
+
+        let plugin_root = planned
+            .plugin_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // Whitelist manufacturer binary basename.
+        let req = ExecRequest {
+            plugin_id: if self.whitelist.allows_plugin(&planned.id) {
+                Some(planned.id.clone())
+            } else {
+                None
+            },
+            argv: vec![planned.command.clone()],
+            workdir: planned.workdir.as_ref().map(|p| p.display().to_string()),
+        };
+        self.whitelist.check(&req).map_err(|e| anyhow!(e))?;
+
+        let spec = CliAgentSpec::try_from_planned(
+            &planned.id,
+            &planned.command,
+            &planned.args,
+            &planned.env,
+            planned.workdir.as_deref(),
+            self.cli_hub.base_url(),
+            &plugin_root,
+        )?;
+        self.cli_hub.start(spec).await
+    }
+
     pub async fn stop_child(&self, id: &str) -> Result<()> {
-        // Adopted (pid=0) children are not in ProcessManager — drop the adopt map entry.
         self.adopted.write().await.remove(id);
+        if self.cli_hub.is_running(id).await {
+            return self.cli_hub.stop(id).await;
+        }
         self.processes.kill(id).await
     }
 
     pub async fn restart_child(&self, id: &str) -> Result<ChildHandle> {
-        let _ = self.processes.kill(id).await;
+        let _ = self.stop_child(id).await;
         self.start_child(id).await
     }
 
     pub async fn exec_whitelisted(&self, req: ExecRequest) -> Result<ChildHandle> {
-        self.whitelist
-            .check(&req)
-            .map_err(|e| anyhow!(e))?;
+        self.whitelist.check(&req).map_err(|e| anyhow!(e))?;
 
         if let Some(id) = req.plugin_id.clone() {
             // Prefer planned manifest
@@ -251,6 +308,13 @@ impl Supervisor {
         let mut children = self.processes.list().await;
         let managed: std::collections::HashSet<String> =
             children.iter().map(|c| c.id.clone()).collect();
+        for h in self.cli_hub.list().await {
+            if !managed.contains(&h.id) {
+                children.push(h);
+            }
+        }
+        let managed: std::collections::HashSet<String> =
+            children.iter().map(|c| c.id.clone()).collect();
         for (id, h) in self.adopted.read().await.iter() {
             if !managed.contains(id) {
                 children.push(h.clone());
@@ -276,7 +340,15 @@ impl Supervisor {
         let interval = Duration::from_secs(self.cfg.heartbeat_interval_secs.max(5));
         loop {
             tokio::time::sleep(interval).await;
-            let children = self.processes.list().await;
+            let children = {
+                let mut c = self.processes.list().await;
+                for h in self.cli_hub.list().await {
+                    if !c.iter().any(|x| x.id == h.id) {
+                        c.push(h);
+                    }
+                }
+                c
+            };
             let planned_ids: Vec<String> = self.planned.read().await.keys().cloned().collect();
             let extra = serde_json::json!({
                 "children": children.iter().map(|c| {
@@ -288,7 +360,7 @@ impl Supervisor {
             if let Err(e) = os.heartbeat(Some(extra.clone())).await {
                 warn!(error = %e, "node heartbeat error");
             }
-            // Child harness lifecycle (AOP_NODE_MANAGED children do not self-heartbeat).
+            // Child harness lifecycle (AOP_NODE_MANAGED / cli-hosted do not self-heartbeat).
             // Skip plugins without health_url (e.g. sample echo) — they are not OS agents.
             let planned_snapshot: HashMap<String, Option<String>> = {
                 let planned = self.planned.read().await;
@@ -320,7 +392,8 @@ impl Supervisor {
     }
 
     pub async fn shutdown(&self) {
-        info!("supervisor shutting down; killing children");
+        info!("supervisor shutting down; stopping cli A2A + children");
+        self.cli_hub.stop_all().await;
         self.processes.kill_all().await;
     }
 }
@@ -328,21 +401,25 @@ impl Supervisor {
 fn planned_from_agent(a: &AgentSpec) -> Planned {
     Planned {
         id: a.id.clone(),
+        kind: PluginKind::Agent,
         command: a.command.clone(),
         args: a.args.clone(),
         env: a.env.clone(),
         workdir: a.workdir.as_ref().map(PathBuf::from),
         health_url: a.health_url.clone(),
+        plugin_root: None,
     }
 }
 
 fn planned_from_manifest(m: &PluginManifest, root: &std::path::Path) -> Planned {
     Planned {
         id: m.id.clone(),
+        kind: m.kind,
         command: m.command.clone(),
         args: m.args.clone(),
         env: m.env.clone(),
         workdir: Some(m.workdir_path(root)),
         health_url: m.health_url.clone(),
+        plugin_root: Some(root.to_path_buf()),
     }
 }

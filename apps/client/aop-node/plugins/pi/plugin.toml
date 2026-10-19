@@ -1,18 +1,14 @@
 id = "pi"
 version = "0.1.0"
-kind = "agent"
-command = "python"
-args = ["-u", "../_harness/run_profile.py"]
+kind = "cli"
+command = "pi"
+args = []
 workdir = "."
-health_url = "http://127.0.0.1:8023/health"
-description = "aopd Pi (plugin → agents/harness-agent)"
+description = "aopd Pi — shared A2A port /agents/pi; tasks spawn manufacturer pi CLI"
 
 [env]
-PORT = "8023"
-AGENT_URL = "http://127.0.0.1:8023/"
 HARNESS_PROFILE = "pi"
 AGENT_ID = "aopd-pi"
 AGENT_DISPLAY_NAME = "aopd Pi"
-AOP_NODE_MANAGED = "1"
-HARNESS_HEARTBEAT = "0"
 HARNESS_RUNNER = "pi_cli"
+# Optional: PI_CLI_PATH=/path/to/pi

@@ -1,4 +1,5 @@
 import { cachedGet, invalidateTaskCache } from "@/lib/taskFetchCache";
+import type { AgentIdentityCode } from "./identities";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8080";
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
@@ -117,12 +118,7 @@ export type TaskEvent = {
   ts?: string;
 };
 
-export type AgentIdentity =
-  | "assistant"
-  | "manager"
-  | "employee"
-  | "student"
-  | "support";
+export type AgentIdentity = AgentIdentityCode;
 
 export type Agent = {
   agent_id: string;

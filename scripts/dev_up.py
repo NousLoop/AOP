@@ -5,7 +5,7 @@ Ctrl+C stops the app processes (Postgres/Redis/MinIO stay up).
 
   python scripts/dev_up.py
   python scripts/dev_up.py --skip-agents
-  python scripts/dev_up.py --legacy-agents   # 5× uvicorn only (skip aopd)
+  python scripts/dev_up.py --legacy-agents   # opt-in: 5× uvicorn instead of aopd
   python scripts/dev_up.py --skip-web
 """
 
@@ -143,18 +143,14 @@ def _spawn(name: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> sub
 
 
 def _harness_profiles() -> list[tuple[str, int]]:
-    try:
-        from agent_runtime.harness.profiles import as_port_tuples
-
-        default = as_port_tuples()
-    except ImportError:
-        default = [
-            ("claude-code", 8011),
-            ("deepseek-harness", 8012),
-            ("pi", 8013),
-            ("openclaw", 8014),
-            ("hermes", 8015),
-        ]
+    """Opt-in --legacy-agents only: one uvicorn per port (not in shared catalog)."""
+    default = [
+        ("claude-code", 8011),
+        ("deepseek-harness", 8012),
+        ("pi", 8013),
+        ("openclaw", 8014),
+        ("hermes", 8015),
+    ]
     raw = os.getenv("HARNESS_PROFILES", "").strip()
     if not raw:
         return default
@@ -169,11 +165,11 @@ def _aopd_harness_profiles() -> list[tuple[str, int]]:
         return as_aopd_plugin_port_tuples()
     except ImportError:
         return [
-            ("claude-code", 8021),
-            ("deepseek-harness", 8022),
-            ("pi", 8023),
-            ("openclaw", 8024),
-            ("hermes", 8025),
+            ("claude-code", 8020),
+            ("deepseek-harness", 8020),
+            ("pi", 8020),
+            ("openclaw", 8020),
+            ("hermes", 8020),
         ]
 
 
@@ -276,20 +272,29 @@ def _aopd_candidates() -> list[Path]:
 
 
 def _ensure_aopd() -> Path | None:
-    for p in _aopd_candidates():
-        if p.is_file():
-            return p
+    existing = [p for p in _aopd_candidates() if p.is_file()]
+    if existing:
+        # Prefer the binary that matches current plugins (debug is often newer than a stale release).
+        return max(existing, key=lambda p: p.stat().st_mtime)
     cargo = shutil.which("cargo") or shutil.which("cargo.exe")
     if not cargo:
         return None
     node = ROOT / "apps" / "client" / "aop-node"
+    # Cursor/sandbox may redirect CARGO_TARGET_DIR away from apps/client/aop-node/target.
+    # Always build into the repo path that _aopd_candidates() scans.
+    build_env = os.environ.copy()
+    build_env["CARGO_TARGET_DIR"] = str((node / "target").resolve())
     _info("cargo build -p aopd (first time may take a minute)")
-    r = subprocess.run(_resolve_argv(["cargo", "build", "-p", "aopd"]), cwd=str(node))
+    r = subprocess.run(
+        _resolve_argv(["cargo", "build", "-p", "aopd"]),
+        cwd=str(node),
+        env=build_env,
+    )
     if r.returncode != 0:
         return None
-    for p in _aopd_candidates():
-        if p.is_file():
-            return p
+    existing = [p for p in _aopd_candidates() if p.is_file()]
+    if existing:
+        return max(existing, key=lambda p: p.stat().st_mtime)
     return None
 
 
@@ -356,7 +361,7 @@ def _aopd_start_missing_harness() -> None:
     import urllib.request
 
     for name, port in _aopd_harness_profiles():
-        if _http_ok(f"http://127.0.0.1:{port}/health"):
+        if _harness_health_ok(name, port):
             continue
         req = urllib.request.Request(
             f"http://127.0.0.1:7920/v1/agents/{name}/start",
@@ -373,13 +378,20 @@ def _aopd_start_missing_harness() -> None:
             print(f"  aopd start {name} error: {exc}", flush=True)
 
 
+def _harness_health_ok(name: str, port: int) -> bool:
+    """Per-port harness or aopd shared CLI A2A at :8020/agents/<id>/."""
+    if _http_ok(f"http://127.0.0.1:{port}/health"):
+        return True
+    return _http_ok(f"http://127.0.0.1:8020/agents/{name}/health")
+
+
 def _wait_harness_ports(*, seconds: float = 45.0) -> list[str]:
     missing: list[str] = []
     for name, port in _aopd_harness_profiles():
         end = time.time() + seconds
         while time.time() < end:
-            if _http_ok(f"http://127.0.0.1:{port}/health"):
-                print(f"  {name} :{port} OK", flush=True)
+            if _harness_health_ok(name, port):
+                print(f"  {name} ready", flush=True)
                 break
             time.sleep(0.5)
         else:
@@ -404,10 +416,10 @@ def _start_aop_node(
         missing = [
             f"{name}:{port}"
             for name, port in _aopd_harness_profiles()
-            if not _http_ok(f"http://127.0.0.1:{port}/health")
+            if not _harness_health_ok(name, port)
         ]
         if not missing:
-            print("  aop-node :7920 up and harness ports healthy", flush=True)
+            print("  aop-node :7920 up and harness agents healthy", flush=True)
             return True
         print(
             "  aop-node :7920 up but harness not listening "
@@ -473,7 +485,7 @@ def main() -> int:
     parser.add_argument(
         "--legacy-agents",
         action="store_true",
-        help="start 5× uvicorn instead of aop-node supervisor",
+        help="opt-in: start 5× uvicorn (8011–8015) instead of aopd shared :8020",
     )
     parser.add_argument("--skip-web", action="store_true", help="do not start Next.js console")
     parser.add_argument("--no-infra", action="store_true", help="assume postgres/redis/minio already running")
@@ -590,8 +602,7 @@ def main() -> int:
                 _start_legacy_agents(procs, env)
             else:
                 if not _start_aop_node(procs, env):
-                    _die("aopd failed to start — see .aop/logs/aopd.log (use --legacy-agents only to skip)")
-                _start_legacy_agents(procs, env)
+                    _die("aopd failed to start — see .aop/logs/aopd.log (use --legacy-agents to fall back)")
 
         print("", flush=True)
         _info("ready")

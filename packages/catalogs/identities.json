@@ -1,0 +1,10 @@
+{
+  "default": "assistant",
+  "items": [
+    { "code": "assistant", "label": "助理" },
+    { "code": "manager", "label": "主管" },
+    { "code": "employee", "label": "员工" },
+    { "code": "student", "label": "学生" },
+    { "code": "support", "label": "客服" }
+  ]
+}

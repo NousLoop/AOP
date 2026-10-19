@@ -77,3 +77,16 @@ def test_task_status_rejected_and_auth_required():
     assert TaskStatus.parse("rejected") == TaskStatus.REJECTED
     assert TaskStatus.parse({"state": "auth-required"}) == TaskStatus.AUTH_REQUIRED
     assert TaskStatus.parse("cancelled") == TaskStatus.CANCELED
+
+
+def test_task_failed_string_status_message_is_error():
+    task = Task.from_dict(
+        {
+            "id": "t-fail",
+            "status": {"state": "failed", "message": "dsh exited 1: missing API key"},
+            "artifacts": [],
+            "metadata": {"error": "dsh exited 1: missing API key"},
+        }
+    )
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "dsh exited 1: missing API key"

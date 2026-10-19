@@ -33,30 +33,18 @@ import {
   type AgentRuntimeHealth,
   type AuthUser,
 } from "@/lib/api";
+import { IDENTITY_OPTIONS, identityLabel, DEFAULT_IDENTITY } from "@/lib/identities";
+import {
+  AOPD_AGENT_PRESETS,
+  CLI_A2A_LISTEN,
+  DEFAULT_REGISTER_ENDPOINT,
+  WORK_AGENT_KEYS,
+} from "@/lib/harness";
 type Tab = "registry" | "routing";
 type ViewMode = "cards" | "list";
 
 /** Plan hops are agent_key. Supervisors are not work agents. */
-const FALLBACK_AGENT_KEYS = [
-  "claude-code",
-  "deepseek-harness",
-  "pi",
-  "openclaw",
-  "hermes",
-] as const;
-
-const IDENTITY_OPTIONS = [
-  { value: "assistant", label: "助理" },
-  { value: "manager", label: "主管" },
-  { value: "employee", label: "员工" },
-  { value: "student", label: "学生" },
-  { value: "support", label: "客服" },
-] as const;
-
-function identityLabel(code?: string) {
-  const hit = IDENTITY_OPTIONS.find((o) => o.value === code);
-  return hit?.label || code || "助理";
-}
+const FALLBACK_AGENT_KEYS = WORK_AGENT_KEYS;
 
 function ownerLabel(a: Agent) {
   return a.owner_display_name || a.owner_email || "未绑定";
@@ -93,7 +81,7 @@ export function AgentsPageView() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRegister, setShowRegister] = useState(false);
-  const [endpoint, setEndpoint] = useState("http://127.0.0.1:8011");
+  const [endpoint, setEndpoint] = useState(DEFAULT_REGISTER_ENDPOINT);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<Agent | null>(null);
   const [lifeHealth, setLifeHealth] = useState<AgentRuntimeHealth | null>(null);
@@ -103,7 +91,7 @@ export function AgentsPageView() {
   const [relNote, setRelNote] = useState<string | null>(null);
   const [lifeError, setLifeError] = useState<string | null>(null);
   const [teammates, setTeammates] = useState<AuthUser[]>([]);
-  const [editIdentity, setEditIdentity] = useState("assistant");
+  const [editIdentity, setEditIdentity] = useState(DEFAULT_IDENTITY);
   const [editOwnerId, setEditOwnerId] = useState("");
 
   useEffect(() => {
@@ -116,7 +104,7 @@ export function AgentsPageView() {
       setLifeError(null);
       return;
     }
-    setEditIdentity(selected.identity || "assistant");
+    setEditIdentity(selected.identity || DEFAULT_IDENTITY);
     setEditOwnerId(selected.owner_user_id || "");
     let alive = true;
     const id = selected.agent_id;
@@ -585,14 +573,36 @@ export function AgentsPageView() {
             className="w-full max-w-md rounded-2xl border border-white/10 bg-ink-900 p-5"
           >
             <div className="font-display text-xl text-mist-100">注册 Agent</div>
-            <p className="mt-1 text-sm text-mist-400">填入 A2A Endpoint，自动拉取 Agent Card。</p>
+            <p className="mt-1 text-sm text-mist-400">
+              填入 A2A Endpoint。aopd 默认共享{" "}
+              <span className="font-mono text-mist-300">{CLI_A2A_LISTEN}</span>
+              ，路径{" "}
+              <span className="font-mono text-mist-300">/agents/&lt;id&gt;/</span>
+              ，注册时自动拉取 Agent Card。
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {AOPD_AGENT_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setEndpoint(p.endpoint)}
+                  className={`rounded-lg border px-2 py-1 font-mono text-[10px] uppercase tracking-wide ${
+                    endpoint === p.endpoint
+                      ? "border-signal/50 bg-signal/10 text-signal"
+                      : "border-white/10 text-mist-400 hover:border-white/20 hover:text-mist-200"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
             <input
               id="agents-register-endpoint"
               name="endpoint"
               value={endpoint}
               onChange={(e) => setEndpoint(e.target.value)}
-              className="mt-4 w-full rounded-xl border border-white/10 bg-ink-950 px-3 py-2 font-mono text-sm text-mist-100 outline-none focus:border-signal/40"
-              placeholder="http://127.0.0.1:8011"
+              className="mt-3 w-full rounded-xl border border-white/10 bg-ink-950 px-3 py-2 font-mono text-sm text-mist-100 outline-none focus:border-signal/40"
+              placeholder={DEFAULT_REGISTER_ENDPOINT}
             />
             <div className="mt-4 flex justify-end gap-2">
               <button

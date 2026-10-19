@@ -1,19 +1,14 @@
 id = "hermes"
 version = "0.1.0"
-kind = "agent"
-command = "python"
-args = ["-u", "../_harness/run_profile.py"]
+kind = "cli"
+command = "hermes"
+args = []
 workdir = "."
-health_url = "http://127.0.0.1:8025/health"
-description = "aopd Hermes (plugin → agents/harness-agent)"
+description = "aopd Hermes — shared A2A port /agents/hermes; tasks spawn manufacturer hermes CLI"
 
 [env]
-PORT = "8025"
-AGENT_URL = "http://127.0.0.1:8025/"
 HARNESS_PROFILE = "hermes"
 AGENT_ID = "aopd-hermes"
 AGENT_DISPLAY_NAME = "aopd Hermes"
-AOP_NODE_MANAGED = "1"
-HARNESS_HEARTBEAT = "0"
 HARNESS_RUNNER = "hermes"
-# Resolve hermes via PATH, or set HERMES_CLI_PATH in aop-node.toml / user env.
+# Optional: HERMES_CLI_PATH=/path/to/hermes

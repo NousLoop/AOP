@@ -1,18 +1,14 @@
 id = "claude-code"
 version = "0.1.0"
-kind = "agent"
-command = "python"
-args = ["-u", "../_harness/run_profile.py"]
+kind = "cli"
+command = "claude"
+args = []
 workdir = "."
-health_url = "http://127.0.0.1:8021/health"
-description = "aopd Claude Code (plugin → agents/harness-agent)"
+description = "aopd Claude Code — shared A2A port /agents/claude-code; tasks spawn manufacturer claude CLI"
 
 [env]
-PORT = "8021"
-AGENT_URL = "http://127.0.0.1:8021/"
 HARNESS_PROFILE = "claude-code"
 AGENT_ID = "aopd-claude-code"
 AGENT_DISPLAY_NAME = "aopd Claude Code"
-AOP_NODE_MANAGED = "1"
-HARNESS_HEARTBEAT = "0"
 HARNESS_RUNNER = "claude_cli"
+# Optional: CLAUDE_CLI_PATH=/path/to/claude

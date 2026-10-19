@@ -1,91 +1,60 @@
-"""Unit tests for harness profile single source of truth."""
+"""Unit tests for harness profile catalog (aopd-only shared listen)."""
 
 from __future__ import annotations
 
 from agent_runtime.harness.profiles import (
+    AOPD_HARNESS_PROFILES,
+    CLI_A2A_LISTEN,
     HARNESS_PROFILES,
+    aopd_plugin_endpoints,
     as_port_tuples,
-    default_ports,
-    host_port_map,
+    host_endpoint_map,
     marketplace_catalog_rows,
     profile_by_key,
 )
 
 
-def test_profile_keys() -> None:
+def test_only_aopd_agents_no_per_agent_port() -> None:
+    assert CLI_A2A_LISTEN == "127.0.0.1:8020"
+    assert HARNESS_PROFILES is AOPD_HARNESS_PROFILES
     keys = [p.key for p in HARNESS_PROFILES]
     assert keys == [
-        "claude-code",
-        "deepseek-harness",
-        "pi",
-        "openclaw",
-        "hermes",
-    ]
-    assert profile_by_key("aop-hosted") is None
-
-
-def test_ports_unique_and_stable() -> None:
-    ports = default_ports()
-    assert ports == {
-        "claude-code": 8011,
-        "deepseek-harness": 8012,
-        "pi": 8013,
-        "openclaw": 8014,
-        "hermes": 8015,
-    }
-    assert len(set(ports.values())) == len(ports)
-
-
-def test_host_port_map_includes_harness_alias() -> None:
-    m = host_port_map()
-    assert m["harness-agent"] == 8011
-    assert m["claude-code"] == 8011
-    assert m["aopd-claude-code"] == 8021
-
-
-def test_as_port_tuples_order() -> None:
-    assert as_port_tuples()[0] == ("claude-code", 8011)
-    assert as_port_tuples()[-1] == ("hermes", 8015)
-
-
-def test_profile_by_key() -> None:
-    assert profile_by_key("PI") is not None
-    assert profile_by_key("PI").port == 8013
-    assert profile_by_key("missing") is None
-
-
-def test_marketplace_catalog_rows() -> None:
-    rows = marketplace_catalog_rows(
-        endpoint_resolver=lambda _k, fb: fb,
-    )
-    assert len(rows) == 5
-    assert all(r["skills"] == [] for r in rows)
-    assert rows[0]["package_id"] == "pkg-claude-code"
-    assert rows[0]["default_endpoint"] == "http://127.0.0.1:8011"
-
-
-def test_aopd_profiles_and_plugin_ports() -> None:
-    from agent_runtime.harness.profiles import (
-        AOPD_HARNESS_PROFILES,
-        as_aopd_plugin_port_tuples,
-        profile_by_key,
-    )
-
-    assert [p.key for p in AOPD_HARNESS_PROFILES] == [
         "aopd-claude-code",
         "aopd-deepseek-harness",
         "aopd-pi",
         "aopd-openclaw",
         "aopd-hermes",
     ]
-    assert profile_by_key("aopd-claude-code").port == 8021
-    assert profile_by_key("aopd-claude-code").name == "aopd Claude Code"
-    assert as_aopd_plugin_port_tuples()[0] == ("claude-code", 8021)
+    assert all(p.path.startswith("/agents/") for p in HARNESS_PROFILES)
+    # Port comes only from cli_a2a_listen, not per-row JSON.
+    assert all(p.port == 8020 for p in HARNESS_PROFILES)
 
 
-def test_aop_node_plugin_toml_ports_match_profiles() -> None:
-    """Keep plugins/*/plugin.toml health_url ports in sync with AOPD_HARNESS_PROFILES."""
-    import re
+def test_profile_by_plugin_id_and_aopd_key() -> None:
+    assert profile_by_key("pi").key == "aopd-pi"
+    assert profile_by_key("aopd-pi").default_endpoint == "http://127.0.0.1:8020/agents/pi"
+    assert profile_by_key("missing") is None
+
+
+def test_endpoints_not_agent_colon_port() -> None:
+    eps = aopd_plugin_endpoints()
+    assert eps["claude-code"] == "http://127.0.0.1:8020/agents/claude-code"
+    assert as_port_tuples()[0] == ("claude-code", 8020)
+    m = host_endpoint_map()
+    assert m["aopd-pi"] == "http://127.0.0.1:8020/agents/pi"
+    assert m["pi"] == m["aopd-pi"]
+
+
+def test_marketplace_catalog_rows() -> None:
+    rows = marketplace_catalog_rows(endpoint_resolver=lambda _k, fb: fb)
+    assert len(rows) == 5
+    assert rows[0]["agent_key"] == "aopd-claude-code"
+    assert rows[0]["plugin_id"] == "claude-code"
+    assert rows[0]["package_id"] == "pkg-aopd-claude-code"
+    assert rows[0]["default_endpoint"] == "http://127.0.0.1:8020/agents/claude-code"
+
+
+def test_aop_node_cli_plugins_match_catalog() -> None:
     from pathlib import Path
 
     from agent_runtime.harness.profiles import aopd_plugin_ports
@@ -93,15 +62,9 @@ def test_aop_node_plugin_toml_ports_match_profiles() -> None:
     repo = Path(__file__).resolve().parents[3]
     plugins = repo / "apps" / "client" / "aop-node" / "plugins"
     assert plugins.is_dir(), plugins
-    ports = aopd_plugin_ports()
-    health_re = re.compile(r'health_url\s*=\s*"http://127\.0\.0\.1:(\d+)/health"')
-    for key, expected_port in ports.items():
-        toml = plugins / key / "plugin.toml"
-        assert toml.is_file(), f"missing plugin.toml for profile {key}: {toml}"
+    for plugin_id in aopd_plugin_ports():
+        toml = plugins / plugin_id / "plugin.toml"
+        assert toml.is_file(), f"missing plugin.toml for {plugin_id}: {toml}"
         text = toml.read_text(encoding="utf-8")
-        m = health_re.search(text)
-        assert m, f"{toml} missing health_url with localhost port"
-        assert int(m.group(1)) == expected_port, (
-            f"{key}: plugin.toml port {m.group(1)} != aopd profiles {expected_port}"
-        )
-        assert f'AGENT_DISPLAY_NAME = "aopd ' in text or "AGENT_DISPLAY_NAME" in text
+        assert 'kind = "cli"' in text, f"{toml} should be kind=cli"
+        assert "AGENT_DISPLAY_NAME" in text

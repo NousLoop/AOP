@@ -99,5 +99,5 @@ def test_normalize_keeps_docker_dns_when_runtime_docker():
 
 def test_normalize_maps_to_localhost_on_host():
     with patch.dict(os.environ, {"AOP_RUNTIME": "host"}, clear=False):
-        assert normalize_endpoint("http://claude-coder:8011/") == "http://127.0.0.1:8011/"
-        assert normalize_endpoint("http://pi-researcher:8014/") == "http://127.0.0.1:8014/"
+        assert normalize_endpoint("http://claude-code:8011/") == "http://127.0.0.1:8020/agents/claude-code/"
+        assert normalize_endpoint("http://claude-coder:8011/") == "http://claude-coder:8011/"

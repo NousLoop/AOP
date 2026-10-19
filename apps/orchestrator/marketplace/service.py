@@ -46,17 +46,19 @@ try:
 except ImportError:  # pragma: no cover — orchestrator without editable agent-runtime
     CATALOG = [
         {
-            "package_id": "pkg-claude-code",
-            "name": "Claude Code Agent",
-            "description": "Unified Claude Code harness agent",
+            "package_id": "pkg-aopd-claude-code",
+            "name": "aopd Claude Code",
+            "description": "Claude Code via aopd shared CLI A2A",
             "publisher": "AOP Official",
             "version": "0.1.0",
             "skills": [],
             "default_endpoint": _agent_endpoint(
-                "AOP_AGENT_CLAUDE_CODE_URL", "http://127.0.0.1:8011"
+                "AOP_AGENT_CLAUDE_CODE_URL",
+                "http://127.0.0.1:8020/agents/claude-code",
             ),
-            "agent_key": "claude-code",
-            "tags": ["harness", "claude"],
+            "agent_key": "aopd-claude-code",
+            "plugin_id": "claude-code",
+            "tags": ["harness", "claude", "aopd"],
         },
     ]
 

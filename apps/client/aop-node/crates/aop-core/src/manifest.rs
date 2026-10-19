@@ -12,11 +12,19 @@ use crate::expand::expand_path;
 pub enum PluginKind {
     Agent,
     Plugin,
+    /// Manufacturer CLI: aopd hosts A2A; short-lived spawn of `command` per task.
+    Cli,
 }
 
 impl Default for PluginKind {
     fn default() -> Self {
         Self::Plugin
+    }
+}
+
+impl PluginKind {
+    pub fn is_cli(self) -> bool {
+        matches!(self, Self::Cli)
     }
 }
 
@@ -114,5 +122,21 @@ args = ["hello"]
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].1.id, "echo");
         assert_eq!(found[0].1.kind, PluginKind::Plugin);
+    }
+
+    #[test]
+    fn parse_cli_kind() {
+        let m: PluginManifest = toml::from_str(
+            r#"
+id = "claude-code"
+version = "0.1.0"
+kind = "cli"
+command = "claude"
+health_url = "http://127.0.0.1:8021/health"
+"#,
+        )
+        .unwrap();
+        assert!(m.kind.is_cli());
+        assert_eq!(m.command, "claude");
     }
 }

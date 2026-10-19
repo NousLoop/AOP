@@ -2,10 +2,14 @@ package registry
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/aop/a2a-platform/packages/catalogs"
 )
 
 // Business identity codes stored on agents.identity (platform governance, not A2A card).
+// Codes must match packages/catalogs/identities.json.
 const (
 	IdentityAssistant = "assistant"
 	IdentityManager   = "manager"
@@ -13,17 +17,14 @@ const (
 	IdentityStudent   = "student"
 	IdentitySupport   = "support"
 
-	DefaultIdentity = IdentityAssistant
-	DevAdminEmail   = "admin@aop.local"
+	DevAdminEmail = "admin@aop.local"
 )
 
-var ValidIdentities = map[string]string{
-	IdentityAssistant: "助理",
-	IdentityManager:   "主管",
-	IdentityEmployee:  "员工",
-	IdentityStudent:   "学生",
-	IdentitySupport:   "客服",
-}
+// DefaultIdentity and ValidIdentities come from packages/catalogs/identities.json.
+var (
+	DefaultIdentity = catalogs.DefaultIdentity()
+	ValidIdentities = catalogs.IdentityLabels()
+)
 
 func NormalizeIdentity(raw string) (string, error) {
 	id := strings.ToLower(strings.TrimSpace(raw))
@@ -31,7 +32,12 @@ func NormalizeIdentity(raw string) (string, error) {
 		return DefaultIdentity, nil
 	}
 	if _, ok := ValidIdentities[id]; !ok {
-		return "", fmt.Errorf("invalid identity %q; allowed: assistant, manager, employee, student, support", raw)
+		allowed := make([]string, 0, len(ValidIdentities))
+		for code := range ValidIdentities {
+			allowed = append(allowed, code)
+		}
+		sort.Strings(allowed)
+		return "", fmt.Errorf("invalid identity %q; allowed: %s", raw, strings.Join(allowed, ", "))
 	}
 	return id, nil
 }

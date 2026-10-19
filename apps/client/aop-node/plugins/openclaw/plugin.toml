@@ -1,19 +1,14 @@
 id = "openclaw"
 version = "0.1.0"
-kind = "agent"
-command = "python"
-args = ["-u", "../_harness/run_profile.py"]
+kind = "cli"
+command = "openclaw"
+args = []
 workdir = "."
-health_url = "http://127.0.0.1:8024/health"
-description = "aopd OpenClaw (plugin → agents/harness-agent)"
+description = "aopd OpenClaw — shared A2A port /agents/openclaw; tasks spawn manufacturer openclaw CLI"
 
 [env]
-PORT = "8024"
-AGENT_URL = "http://127.0.0.1:8024/"
 HARNESS_PROFILE = "openclaw"
 AGENT_ID = "aopd-openclaw"
 AGENT_DISPLAY_NAME = "aopd OpenClaw"
-AOP_NODE_MANAGED = "1"
-HARNESS_HEARTBEAT = "0"
 HARNESS_RUNNER = "openclaw"
-# Resolve openclaw via PATH, or set OPENCLAW_CLI_PATH in aop-node.toml / user env.
+# Optional: OPENCLAW_CLI_PATH=/path/to/openclaw

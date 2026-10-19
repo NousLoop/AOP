@@ -9,17 +9,66 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-IDENTITY_LABELS: dict[str, str] = {
+# Last-resort fallback if packages/catalogs/identities.json is not on disk
+# (e.g. partial install). Prefer the shared JSON file.
+_FALLBACK_IDENTITY_LABELS: dict[str, str] = {
     "assistant": "助理",
     "manager": "主管",
     "employee": "员工",
     "student": "学生",
     "support": "客服",
 }
+_FALLBACK_DEFAULT_IDENTITY = "assistant"
+
+
+def _identities_catalog_path() -> Path | None:
+    env = (os.getenv("AOP_REPO_ROOT") or "").strip()
+    if env:
+        p = Path(env) / "packages" / "catalogs" / "identities.json"
+        if p.is_file():
+            return p
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        p = parent / "packages" / "catalogs" / "identities.json"
+        if p.is_file():
+            return p
+    return None
+
+
+def _load_identity_catalog() -> tuple[str, dict[str, str]]:
+    path = _identities_catalog_path()
+    if path is None:
+        logger.warning(
+            "packages/catalogs/identities.json not found; using built-in identity labels"
+        )
+        return _FALLBACK_DEFAULT_IDENTITY, dict(_FALLBACK_IDENTITY_LABELS)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("failed to load %s: %s", path, exc)
+        return _FALLBACK_DEFAULT_IDENTITY, dict(_FALLBACK_IDENTITY_LABELS)
+    default = str(data.get("default") or _FALLBACK_DEFAULT_IDENTITY).strip().lower()
+    labels: dict[str, str] = {}
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip().lower()
+        label = str(item.get("label") or "").strip()
+        if code and label:
+            labels[code] = label
+    if not labels:
+        return _FALLBACK_DEFAULT_IDENTITY, dict(_FALLBACK_IDENTITY_LABELS)
+    if default not in labels:
+        default = next(iter(labels))
+    return default, labels
+
+
+DEFAULT_IDENTITY, IDENTITY_LABELS = _load_identity_catalog()
 
 _DEFAULT_GATEWAY = "http://127.0.0.1:8080"
 _CACHE_TTL_S = 30.0
@@ -27,8 +76,8 @@ _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def identity_label(code: str | None) -> str:
-    c = (code or "").strip().lower() or "assistant"
-    return IDENTITY_LABELS.get(c, c or "助理")
+    c = (code or "").strip().lower() or DEFAULT_IDENTITY
+    return IDENTITY_LABELS.get(c, c or IDENTITY_LABELS.get(DEFAULT_IDENTITY, "助理"))
 
 
 def format_platform_role_block(
@@ -39,7 +88,7 @@ def format_platform_role_block(
     owner_user_id: str | None = None,
 ) -> str:
     """Render the bilingual role footer appended to system prompts."""
-    code = (identity or "").strip().lower() or "assistant"
+    code = (identity or "").strip().lower() or DEFAULT_IDENTITY
     label = identity_label(code)
     owner = (owner_display_name or "").strip()
     email = (owner_email or "").strip()
@@ -147,7 +196,7 @@ def fetch_agent_platform_role(agent_ref: str) -> dict[str, Any] | None:
         return None
 
     role = {
-        "identity": str(data.get("identity") or "assistant"),
+        "identity": str(data.get("identity") or DEFAULT_IDENTITY),
         "owner_user_id": str(data.get("owner_user_id") or ""),
         "owner_email": str(data.get("owner_email") or ""),
         "owner_display_name": str(data.get("owner_display_name") or ""),
@@ -167,7 +216,7 @@ def role_from_message_metadata(meta: dict[str, Any] | None) -> dict[str, Any] | 
     if not any([identity, owner_email, owner_name, owner_id]):
         return None
     return {
-        "identity": str(identity or "assistant"),
+        "identity": str(identity or DEFAULT_IDENTITY),
         "owner_email": str(owner_email or ""),
         "owner_display_name": str(owner_name or ""),
         "owner_user_id": str(owner_id or ""),
@@ -208,7 +257,7 @@ def resolve_platform_role(
             return found
 
     return {
-        "identity": "assistant",
+        "identity": DEFAULT_IDENTITY,
         "owner_user_id": "",
         "owner_email": "",
         "owner_display_name": "",
@@ -227,6 +276,7 @@ def enrich_system_prompt_for_agent(
 
 
 __all__ = [
+    "DEFAULT_IDENTITY",
     "IDENTITY_LABELS",
     "enrich_system_prompt",
     "enrich_system_prompt_for_agent",

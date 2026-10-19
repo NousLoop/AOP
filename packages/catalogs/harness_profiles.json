@@ -1,0 +1,55 @@
+{
+  "cli_a2a_listen": "127.0.0.1:8020",
+  "agents": [
+    {
+      "key": "aopd-claude-code",
+      "plugin_id": "claude-code",
+      "path": "/agents/claude-code",
+      "runner": "claude_cli",
+      "name": "aopd Claude Code",
+      "description": "Claude Code via aopd shared CLI A2A (manufacturer claude CLI)",
+      "tags": ["harness", "claude", "aopd"],
+      "env_url_key": "AOP_AGENT_CLAUDE_CODE_URL"
+    },
+    {
+      "key": "aopd-deepseek-harness",
+      "plugin_id": "deepseek-harness",
+      "path": "/agents/deepseek-harness",
+      "runner": "deepseek",
+      "name": "aopd DeepSeek Harness",
+      "description": "DeepSeek via aopd shared CLI A2A (manufacturer dsh CLI)",
+      "tags": ["harness", "deepseek", "aopd"],
+      "env_url_key": "AOP_AGENT_DEEPSEEK_HARNESS_URL"
+    },
+    {
+      "key": "aopd-pi",
+      "plugin_id": "pi",
+      "path": "/agents/pi",
+      "runner": "pi_cli",
+      "name": "aopd Pi",
+      "description": "Pi via aopd shared CLI A2A (manufacturer pi CLI)",
+      "tags": ["harness", "pi", "aopd"],
+      "env_url_key": "AOP_AGENT_PI_URL"
+    },
+    {
+      "key": "aopd-openclaw",
+      "plugin_id": "openclaw",
+      "path": "/agents/openclaw",
+      "runner": "openclaw",
+      "name": "aopd OpenClaw",
+      "description": "OpenClaw via aopd shared CLI A2A (manufacturer openclaw CLI)",
+      "tags": ["harness", "openclaw", "aopd"],
+      "env_url_key": "AOP_AGENT_OPENCLAW_URL"
+    },
+    {
+      "key": "aopd-hermes",
+      "plugin_id": "hermes",
+      "path": "/agents/hermes",
+      "runner": "hermes",
+      "name": "aopd Hermes",
+      "description": "Hermes via aopd shared CLI A2A (manufacturer hermes CLI)",
+      "tags": ["harness", "hermes", "aopd"],
+      "env_url_key": "AOP_AGENT_HERMES_URL"
+    }
+  ]
+}

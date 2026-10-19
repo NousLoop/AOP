@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::expand::{expand_path, resolve_relative};
-use crate::DEFAULT_MGMT_LISTEN;
+use crate::{DEFAULT_CLI_A2A_LISTEN, DEFAULT_MGMT_LISTEN};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -28,6 +28,9 @@ pub struct Config {
     pub heartbeat_interval_secs: u64,
     #[serde(default = "default_mgmt")]
     pub mgmt_listen: String,
+    /// Shared A2A listen for all `kind=cli` plugins (`/agents/<id>/…`).
+    #[serde(default = "default_cli_a2a")]
+    pub cli_a2a_listen: String,
     /// Empty disables self-update checks.
     #[serde(default)]
     pub update_manifest_url: String,
@@ -60,6 +63,9 @@ fn default_heartbeat() -> u64 {
 }
 fn default_mgmt() -> String {
     DEFAULT_MGMT_LISTEN.into()
+}
+fn default_cli_a2a() -> String {
+    DEFAULT_CLI_A2A_LISTEN.into()
 }
 fn default_true() -> bool {
     true
@@ -124,6 +130,7 @@ impl Config {
             log_dir: default_log_dir(),
             heartbeat_interval_secs: default_heartbeat(),
             mgmt_listen: default_mgmt(),
+            cli_a2a_listen: default_cli_a2a(),
             update_manifest_url: String::new(),
             register_endpoint: "http://127.0.0.1:7920/".into(),
             agents: vec![],
@@ -135,6 +142,7 @@ impl Config {
                     "hermes".into(),
                     "pi".into(),
                     "claude".into(),
+                    "dsh".into(),
                     "echo".into(),
                     "cmd".into(),
                 ],
@@ -172,10 +180,26 @@ impl Config {
         if self.mgmt_listen.is_empty() {
             self.mgmt_listen = DEFAULT_MGMT_LISTEN.into();
         }
+        if self.cli_a2a_listen.is_empty() {
+            self.cli_a2a_listen = DEFAULT_CLI_A2A_LISTEN.into();
+        }
     }
 
     pub fn plugins_path(&self) -> PathBuf {
         PathBuf::from(&self.plugins_dir)
+    }
+
+    /// Base URL for shared CLI A2A (no trailing slash), e.g. `http://127.0.0.1:8020`.
+    pub fn cli_a2a_base_url(&self) -> String {
+        format!("http://{}", self.cli_a2a_listen.trim().trim_end_matches('/'))
+    }
+
+    pub fn cli_agent_endpoint(&self, plugin_id: &str) -> String {
+        format!("{}/agents/{}/", self.cli_a2a_base_url(), plugin_id)
+    }
+
+    pub fn cli_agent_health_url(&self, plugin_id: &str) -> String {
+        format!("{}health", self.cli_agent_endpoint(plugin_id))
     }
 
     pub fn log_path(&self) -> PathBuf {

@@ -9,7 +9,7 @@ Inspired by patterns in sibling trees:
 
 | Binary | Role |
 |--------|------|
-| `aopd` | Supervisor daemon: register, heartbeat, child agent lifecycle, whitelist exec, local mgmt HTTP |
+| `aopd` | Supervisor daemon: register, heartbeat, **host A2A for `kind=cli` plugins**, spawn manufacturer CLIs per task, whitelist exec, local mgmt HTTP |
 | `aop` | Optional CLI against the loopback mgmt API |
 
 ## Layout
@@ -22,12 +22,12 @@ aop-node/
   crates/aopd             daemon entry
   crates/aop-cli          `aop` CLI
   plugins/
-    _harness/             shared launcher (find repo + PYTHONPATH + uvicorn)
-    claude-code/          :8011
-    deepseek-harness/     :8012
-    pi/                   :8013
-    openclaw/             :8014
-    hermes/               :8015
+    _harness/             standalone launcher (no aopd; uvicorn harness-agent)
+    claude-code/          kind=cli → command=claude   (shared :8020 /agents/claude-code)
+    deepseek-harness/     kind=cli → command=dsh
+    pi/                   kind=cli → command=pi
+    openclaw/             kind=cli → command=openclaw
+    hermes/               kind=cli → command=hermes
     echo/                 smoke plugin
   config/aop-node.example.toml
 ```
@@ -72,11 +72,12 @@ Non-allowlisted exec is rejected (HTTP 403).
 On boot the supervisor:
 
 1. Starts mgmt HTTP (`/.well-known/agent-card.json` + `/health`)
-2. Autostarts / adopts plugins under `plugins/` (`python -u run.py` → shared `_harness/launch.py` → `agents/harness-agent` on 8011–8015)
-3. `POST {gateway}/v1/agents/register` for the node + each healthy harness endpoint
+2. Autostarts plugins under `plugins/`: for `kind = "cli"`, aopd serves all A2A on one loopback port (`cli_a2a_listen`, default `:8020`) at `/agents/<id>/` (no long-lived Python harness-agent child)
+3. `POST {gateway}/v1/agents/register` for each healthy harness endpoint
 4. Heartbeats to Orchestrator (falls back to Gateway)
+5. On `message/send`, spawns the manufacturer CLI (`claude` / `dsh` / `pi` / `openclaw` / `hermes`) as a short-lived process
 
-Harness plugins (see [`plugins/README.md`](./plugins/README.md)): each has `plugin.toml` + `run.py`; they do **not** embed model CLIs — they launch monorepo `agents/harness-agent` with the right `HARNESS_PROFILE`. Optional override: `AOP_REPO_ROOT`.
+Harness plugins (see [`plugins/README.md`](./plugins/README.md)): `plugin.toml` sets `command` to the vendor binary. Optional `*_CLI_PATH` / `AOP_REPO_ROOT`. Standalone/dev without aopd still uses `_harness/launch.py` → `agents/harness-agent`.
 
 ## Scripts
 
