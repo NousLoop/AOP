@@ -327,7 +327,8 @@ services:
 
   web:
     build:
-      context: ../apps/web
+      context: ..
+      dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_BASE: ${AOP_PUBLIC_SCHEME:-http}://${AOP_PUBLIC_HOST:-127.0.0.1}:8080
         NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-aop_sk_dev_local_0000000000000001}

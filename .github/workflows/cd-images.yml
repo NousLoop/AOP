@@ -37,7 +37,7 @@ jobs:
             context: .
             dockerfile: apps/orchestrator/Dockerfile
           - image: web
-            context: apps/web
+            context: .
             dockerfile: apps/web/Dockerfile
           - image: harness-agent
             context: .
