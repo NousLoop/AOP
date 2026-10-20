@@ -13,15 +13,24 @@ const required = [
   "app/inbox/page.tsx",
   "app/tasks/page.tsx",
   "app/agents/page.tsx",
-  "app/workflows/page.tsx",
   "app/settings/page.tsx",
   "app/login/page.tsx",
   "components/ops/ChaosPlaybook.tsx",
-  "components/workflows/WorkflowsPageView.tsx",
   "components/shell/PreflightBanner.tsx",
+  "components/tasks/agentLabels.ts",
   "hooks/useVisualRuntime.ts",
+  "hooks/useTaskLive.ts",
   "hooks/usePreflight.tsx",
   "lib/api.ts",
+  "lib/api/index.ts",
+  "lib/api/client.ts",
+  "lib/api/auth.ts",
+  "lib/api/tasks.ts",
+  "lib/livePoll.ts",
+  "lib/serverGateway.ts",
+  "middleware.ts",
+  "app/api/auth/login/route.ts",
+  "app/api/backend/[...path]/route.ts",
 ];
 
 const missing = required.filter((rel) => !fs.existsSync(path.join(root, rel)));
@@ -31,32 +40,55 @@ if (missing.length) {
 }
 
 const shell = fs.readFileSync(path.join(root, "components/shell/AppShell.tsx"), "utf8");
-const forbiddenNav = ["/marketplace", "/scheduling"];
+const forbiddenNav = ["/marketplace", "/scheduling", "/inbox", "/workflows"];
 const leaked = forbiddenNav.filter((href) => shell.includes(`"${href}"`) || shell.includes(`'${href}'`));
 if (leaked.length) {
   console.error("nav freeze broken; AppShell still links", leaked.join(", "));
   process.exit(1);
 }
-if (!shell.includes("/workflows")) {
-  console.error("nav missing Flows (/workflows)");
-  process.exit(1);
-}
-if (shell.includes('href: "/inbox"')) {
-  console.error("nav freeze: Inbox must stay out of AppShell");
-  process.exit(1);
-}
-
-const api = fs.readFileSync(path.join(root, "lib/api.ts"), "utf8");
-for (const needle of ["recover_steps", "downloadTaskPackage", "listTeammates"]) {
-  if (!api.includes(needle)) {
-    console.error("lib/api.ts missing", needle);
+for (const href of ["/", "/tasks", "/agents", "/settings"]) {
+  if (!shell.includes(`href: "${href}"`)) {
+    console.error("nav missing", href);
     process.exit(1);
   }
 }
 
-const flows = fs.readFileSync(path.join(root, "components/workflows/WorkflowsPageView.tsx"), "utf8");
-if (!flows.includes("approval_mode") || !flows.includes("approver_agent")) {
-  console.error("Flows editor dropped approval_mode / approver_agent");
+const apiBarrel = fs.readFileSync(path.join(root, "lib/api.ts"), "utf8");
+if (!apiBarrel.includes('from "./api/index"')) {
+  console.error("lib/api.ts must re-export ./api/index");
+  process.exit(1);
+}
+const apiSurface = [
+  "lib/api/preflight.ts",
+  "lib/api/tasks.ts",
+  "lib/api/auth.ts",
+  "lib/api/client.ts",
+]
+  .map((rel) => fs.readFileSync(path.join(root, rel), "utf8"))
+  .join("\n");
+for (const needle of ["recover_steps", "downloadTaskPackage", "listTeammates", "clearLegacySessionToken"]) {
+  if (!apiSurface.includes(needle)) {
+    console.error("lib/api/* missing", needle);
+    process.exit(1);
+  }
+}
+
+const commandCenter = fs.readFileSync(
+  path.join(root, "components/visual-runtime/CommandCenter.tsx"),
+  "utf8",
+);
+if (!commandCenter.includes('dynamic(') || !commandCenter.includes("LiveAgentNetwork")) {
+  console.error("CommandCenter must dynamic-import LiveAgentNetwork");
+  process.exit(1);
+}
+
+const drawer = fs.readFileSync(path.join(root, "components/tasks/TaskDetailDrawer.tsx"), "utf8");
+if (drawer.includes('from "@/components/tasks/TaskFlowDag"')) {
+  console.error("TaskDetailDrawer must not import TaskFlowDag (pulls React Flow)");
+  process.exit(1);
+}
+if (!drawer.includes('from "@/components/tasks/agentLabels"')) {
+  console.error("TaskDetailDrawer must use agentLabels helpers");
   process.exit(1);
 }
 

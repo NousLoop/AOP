@@ -1,7 +1,6 @@
 {
   "name": "DeepSeek Harness",
   "description": "Unified DeepSeek Harness agent. Receives the user goal directly (no skills).",
-  "url": "http://127.0.0.1:8012/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",

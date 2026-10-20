@@ -13,7 +13,10 @@ npm run dev
 
 Open http://127.0.0.1:3000
 
-`NEXT_PUBLIC_API_BASE` defaults to `http://127.0.0.1:8080` (Gateway). CORS is enabled on Gateway.
+Browser REST goes through same-origin BFF `/api/backend` (HttpOnly session cookie via `/api/auth/login`).  
+`NEXT_PUBLIC_API_BASE` is still the absolute Gateway URL for WebSocket and CLI install snippets.  
+Set `AUTH_REQUIRED=true` to make Next middleware redirect anonymous page loads to `/login`.  
+Optional server key: `AOP_API_KEY` (not `NEXT_PUBLIC_*`).
 
 ## Pages
 

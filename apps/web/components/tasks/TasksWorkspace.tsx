@@ -62,9 +62,10 @@ export function TasksWorkspace({ initialTaskId }: { initialTaskId?: string }) {
   const [listLoading, setListLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(urlTask);
   const [busy, setBusy] = useState(false);
+  const [graphWsConnected, setGraphWsConnected] = useState(false);
 
-  const { task, events, artifacts, evaluation, memories, error: liveError, reload, liveMode, wsConnected } =
-    useTaskLive(selectedId);
+  const { task, events, artifacts, evaluation, memories, error: liveError, reload } =
+    useTaskLive(selectedId, { graphWsConnected });
 
   const loadList = useCallback(async () => {
     if (typeof document !== "undefined" && document.hidden) return;
@@ -97,6 +98,7 @@ export function TasksWorkspace({ initialTaskId }: { initialTaskId?: string }) {
 
   useEffect(() => {
     setSelectedId(urlTask);
+    setGraphWsConnected(false);
   }, [urlTask]);
 
   const filteredTasks = useMemo(() => {
@@ -310,11 +312,15 @@ export function TasksWorkspace({ initialTaskId }: { initialTaskId?: string }) {
           ) : null}
           <span
             className={`font-mono text-[10px] uppercase tracking-[0.12em] ${
-              wsConnected ? "text-signal" : "text-mist-400"
+              graphWsConnected ? "text-signal" : "text-mist-400"
             }`}
-            title={wsConnected ? "WebSocket live" : "HTTP poll fallback"}
+            title={
+              graphWsConnected
+                ? "Graph WebSocket live · drawer HTTP reconcile slowed"
+                : "HTTP poll (graph WS down or connecting)"
+            }
           >
-            {liveMode === "ws" ? "live·ws" : "live·poll"}
+            {graphWsConnected ? "live·ws" : "live·poll"}
           </span>
         </div>
         {selectedId ? (
@@ -324,6 +330,7 @@ export function TasksWorkspace({ initialTaskId }: { initialTaskId?: string }) {
               typeof task?.created_at === "string" ? task.created_at : undefined
             }
             onBusyChange={setBusy}
+            onWsConnectedChange={setGraphWsConnected}
             embedded
           />
         ) : (

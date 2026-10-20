@@ -169,7 +169,10 @@ export function AgentsPageView() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      load();
+    }, 5000);
     return () => clearInterval(t);
   }, [status]);
 

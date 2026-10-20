@@ -57,11 +57,23 @@ def _collab_authorized(request: Any) -> bool:
 
 
 def load_agent_card(card_path: str | Path, *, agent_url: Optional[str] = None) -> dict[str, Any]:
+    """Load a profile Agent Card.
+
+    ``url`` is owned by the runtime (aopd endpoint base, or ``AGENT_URL`` /
+    ``PORT`` for standalone uvicorn) — profile JSON should omit it.
+    """
     path = Path(card_path)
     card = json.loads(path.read_text(encoding="utf-8"))
-    override = agent_url or os.getenv("AGENT_URL")
+    override = (agent_url or os.getenv("AGENT_URL") or "").strip()
+    if not override:
+        port = (os.getenv("PORT") or "").strip()
+        if port:
+            override = f"http://127.0.0.1:{port}/"
     if override:
         card["url"] = override if override.endswith("/") else f"{override}/"
+    else:
+        # Do not keep stale localhost ports from an older card revision.
+        card.pop("url", None)
     display = (os.getenv("AGENT_DISPLAY_NAME") or "").strip()
     if display:
         card["name"] = display

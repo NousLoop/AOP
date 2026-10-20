@@ -11,12 +11,25 @@ import {
   type MemoryEntry,
   type TaskEvaluation,
 } from "@/lib/api";
-import { agentDisplayName, hopAgentKey } from "@/components/tasks/TaskFlowDag";
+import dynamic from "next/dynamic";
+import { agentDisplayName, hopAgentKey } from "@/components/tasks/agentLabels";
 import { flowStatusLabel, isBalanceShortage } from "@/components/tasks/taskFlowStatus";
 import { TaskTrace } from "@/components/TaskTrace";
 import { PptPreview } from "@/components/tasks/PptPreview";
 import { ExecutionPanel } from "@/components/tasks/ExecutionPanel";
-import { CostPanel } from "@/components/tasks/CostPanel";
+
+const CostPanel = dynamic(
+  () =>
+    import("@/components/tasks/CostPanel").then((m) => ({
+      default: m.CostPanel,
+    })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="py-6 font-mono text-[11px] text-mist-500">加载成本图…</div>
+    ),
+  },
+);
 
 const DIMENSION_LABELS: Record<string, string> = {
   structure: "结构",

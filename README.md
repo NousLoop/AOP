@@ -16,7 +16,8 @@
 | [Agent 开发](./docs/architecture/agent-dev-guide.md) | Card / 接入规范 |
 | [Harness](./docs/architecture/harness-migration.md) | 虚拟 Agent · CLI 环境 |
 | [API](./docs/reference/api.md) · [Database](./docs/reference/database.md) · [Redis](./docs/reference/redis.md) | 契约 |
-| [部署](./deployments/README.md) | 单机云部署 |
+| [部署](./deployments/README.md) | 单机云部署 · GHCR 镜像 |
+| [CI/CD](./deployments/README.md#cicd-github-actions--ghcr) | GitHub Actions 测试与镜像推送 |
 | [aop-node](./apps/client/aop-node/README.md) | 边缘 Supervisor（本地默认拉起 Harness） |
 
 ## 仓库结构

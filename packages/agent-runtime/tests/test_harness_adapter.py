@@ -343,10 +343,32 @@ def test_message_stream_sse(client):
 def test_load_agent_card_display_name(tmp_path, monkeypatch):
     card_path = tmp_path / "agent-card.json"
     card_path.write_text(
-        '{"name":"Claude Code","url":"http://127.0.0.1:8011/","version":"0.1.0"}',
+        '{"name":"Claude Code","version":"0.1.0"}',
         encoding="utf-8",
     )
     monkeypatch.setenv("AGENT_DISPLAY_NAME", "aopd Claude Code")
     monkeypatch.delenv("AGENT_URL", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
     card = load_agent_card(card_path)
     assert card["name"] == "aopd Claude Code"
+    assert "url" not in card
+
+
+def test_load_agent_card_url_from_port(tmp_path, monkeypatch):
+    card_path = tmp_path / "agent-card.json"
+    card_path.write_text('{"name":"Pi","version":"0.1.0"}', encoding="utf-8")
+    monkeypatch.delenv("AGENT_URL", raising=False)
+    monkeypatch.setenv("PORT", "8013")
+    card = load_agent_card(card_path)
+    assert card["url"] == "http://127.0.0.1:8013/"
+
+
+def test_load_agent_card_strips_stale_file_url(tmp_path, monkeypatch):
+    card_path = tmp_path / "agent-card.json"
+    card_path.write_text(
+        '{"name":"X","url":"http://127.0.0.1:8012/","version":"0.1.0"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_URL", "http://127.0.0.1:8020/agents/x")
+    card = load_agent_card(card_path)
+    assert card["url"] == "http://127.0.0.1:8020/agents/x/"

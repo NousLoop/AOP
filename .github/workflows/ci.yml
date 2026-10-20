@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      gateway: ${{ steps.filter.outputs.gateway }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+      web: ${{ steps.filter.outputs.web }}
+      aop_node: ${{ steps.filter.outputs.aop_node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            gateway:
+              - 'apps/gateway/**'
+              - 'packages/catalogs/**'
+            orchestrator:
+              - 'apps/orchestrator/**'
+              - 'packages/a2a-sdk/**'
+              - 'infrastructure/postgres/**'
+            web:
+              - 'apps/web/**'
+            aop_node:
+              - 'apps/client/aop-node/**'
+
+  gateway:
+    name: Gateway (Go)
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: apps/gateway/go.sum
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -o gateway ./cmd
+
+  orchestrator:
+    name: Orchestrator (pytest)
+    needs: changes
+    if: needs.changes.outputs.orchestrator == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aop
+          POSTGRES_PASSWORD: aop
+          POSTGRES_DB: aop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aop -d aop"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://aop:aop@127.0.0.1:5432/aop
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/orchestrator/requirements.txt
+            packages/a2a-sdk/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/a2a-sdk
+          pip install -r apps/orchestrator/requirements.txt
+          pip install pytest
+      - name: Migrate schema
+        run: python infrastructure/postgres/migrate.py
+      - name: Pytest
+        working-directory: apps/orchestrator
+        run: pytest -q
+
+  web:
+    name: Web (typecheck + smoke)
+    needs: changes
+    if: needs.changes.outputs.web == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Smoke
+        run: npm run smoke
+
+  aop-node:
+    name: aop-node (Rust)
+    needs: changes
+    if: needs.changes.outputs.aop_node == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/client/aop-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/client/aop-node -> target
+      - name: Test
+        run: cargo test --workspace

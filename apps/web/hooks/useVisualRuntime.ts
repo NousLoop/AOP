@@ -7,6 +7,11 @@ import {
   type VisualRuntimeEvent,
 } from "@/lib/api";
 import { useWebSocket, type WebSocketMessage } from "@/hooks/useWebSocket";
+import {
+  GRAPH_POLL_MS,
+  GRAPH_POLL_MS_WHEN_WS,
+  pageVisible,
+} from "@/lib/livePoll";
 
 type VisualWsMessage = WebSocketMessage & {
   root_task_id?: string;
@@ -17,8 +22,6 @@ type VisualWsMessage = WebSocketMessage & {
 };
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "canceled"]);
-const POLL_MS_LIVE = 5000;
-const POLL_MS_DISCONNECTED = 4000;
 
 function isTerminalStatus(status: string | undefined | null): boolean {
   return TERMINAL.has(String(status || "").toLowerCase());
@@ -134,8 +137,19 @@ export function useVisualRuntime(taskId: string | null) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let terminalSettle = false;
 
+    const schedule = (bust: boolean) => {
+      const interval = connectedRef.current
+        ? GRAPH_POLL_MS_WHEN_WS
+        : GRAPH_POLL_MS;
+      timer = setTimeout(() => void tick(bust), interval);
+    };
+
     const tick = async (bust: boolean) => {
       if (!alive) return;
+      if (!pageVisible()) {
+        schedule(false);
+        return;
+      }
       try {
         const snap = await getTaskVisualGraph(taskId, bust ? { bust: true } : undefined);
         if (!alive) return;
@@ -145,7 +159,8 @@ export function useVisualRuntime(taskId: string | null) {
         if (done && (snap.nodes?.length || 0) > 0) {
           if (terminalSettle) return;
           terminalSettle = true;
-          timer = setTimeout(() => void tick(true), POLL_MS_LIVE);
+          // One settle refresh, then stop polling terminal graphs.
+          timer = setTimeout(() => void tick(true), GRAPH_POLL_MS_WHEN_WS);
           return;
         }
       } catch (err) {
@@ -154,14 +169,22 @@ export function useVisualRuntime(taskId: string | null) {
         }
       }
       if (!alive) return;
-      const interval = connectedRef.current ? POLL_MS_LIVE : POLL_MS_DISCONNECTED;
-      timer = setTimeout(() => void tick(false), interval);
+      schedule(false);
     };
+
+    const onVis = () => {
+      if (!document.hidden && alive) {
+        if (timer) clearTimeout(timer);
+        void tick(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     void tick(false);
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [taskId, applySnapshot]);
 

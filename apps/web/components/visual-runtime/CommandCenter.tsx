@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -31,7 +32,6 @@ import {
 } from "@/lib/api";
 import { useVisualRuntime } from "@/hooks/useVisualRuntime";
 import { usePreflight } from "@/hooks/usePreflight";
-import { LiveAgentNetwork } from "./LiveAgentNetwork";
 import { ChaosPlaybook } from "@/components/ops/ChaosPlaybook";
 import {
   AgentInspector,
@@ -39,6 +39,21 @@ import {
   GraphReplayBar,
   TaskInspector,
 } from "./Inspectors";
+
+const LiveAgentNetwork = dynamic(
+  () =>
+    import("./LiveAgentNetwork").then((m) => ({
+      default: m.LiveAgentNetwork,
+    })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full min-h-[52vh] items-center justify-center font-mono text-xs text-mist-400">
+        加载协作图…
+      </div>
+    ),
+  },
+);
 
 const PROMPTS = [
   "Research Vidu S2 and generate a technical report",
@@ -123,6 +138,9 @@ export function CommandCenter() {
       setSummary(null);
       return;
     }
+    // Status-driven refresh (not a timer). Skip when tab hidden — visibility
+    // change on Visual Runtime will re-poll the graph; reopen pulls again.
+    if (typeof document !== "undefined" && document.hidden) return;
     let alive = true;
     getTask(taskId)
       .then((t) => {

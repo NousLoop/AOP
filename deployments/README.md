@@ -90,6 +90,46 @@ artifacts → minio :9000
 
 Agent 在容器网内用服务名注册（如 `http://claude-coder:8011`），见 `docker-compose.single.yml`。
 
+## CI/CD（GitHub Actions + GHCR）
+
+仓库工作流：
+
+| Workflow | 触发 | 作用 |
+|----------|------|------|
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | PR / `push` → `main` | Gateway `go test` · Orchestrator `pytest`（Postgres + Redis）· Web typecheck/smoke · aop-node `cargo test` |
+| [`.github/workflows/cd-images.yml`](../.github/workflows/cd-images.yml) | `push` → `main` / `v*` tag / 手动 | 构建并推送镜像到 GHCR（**不上机自动部署**） |
+
+推送后的镜像（`<owner>/<repo>` 会按 GitHub 仓库小写化，例如 `ghcr.io/nousloop/aop/...`）：
+
+| 镜像 | 说明 |
+|------|------|
+| `ghcr.io/<owner>/<repo>/gateway` | Go Gateway |
+| `ghcr.io/<owner>/<repo>/orchestrator` | Orchestrator / Worker / Outbox 同源镜像 |
+| `ghcr.io/<owner>/<repo>/web` | Next.js Console（`NEXT_PUBLIC_API_BASE` 可在 workflow_dispatch 覆盖） |
+| `ghcr.io/<owner>/<repo>/harness-agent` | Harness 虚拟 Agent |
+
+```bash
+# 登录（私有包需要）
+echo $GHCR_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+
+docker pull ghcr.io/<owner>/<repo>/gateway:latest
+docker pull ghcr.io/<owner>/<repo>/orchestrator:latest
+docker pull ghcr.io/<owner>/<repo>/web:latest
+docker pull ghcr.io/<owner>/<repo>/harness-agent:latest
+```
+
+Tag 约定：`main` → `latest` + commit sha；`v1.2.3` → semver。
+
+与 `./deploy.sh up` 的关系：单机 compose（`docker-compose.single.yml`）仍默认 **本地 `build:`**，不强制拉 GHCR。需要用已推送镜像时，自行改 compose 的 `image:` 或先 `docker pull` 再 tag 成本地期望名。CI/CD 不替代 `deploy.sh`。
+
+GitHub 侧：Settings → Actions → General → Workflow permissions 需允许 **Read and write**（写 Packages）；协作者拉取私有包需 `read:packages`。
+
+若本地 `git remote` 仍指向旧 owner，请改成当前仓库 URL（例如 NousLoop 下的 repo）：
+
+```bash
+git remote set-url origin https://github.com/<owner>/<repo>.git
+```
+
 ## 安全建议（上公网）
 
 1. `AUTH_REQUIRED=true`

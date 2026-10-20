@@ -294,13 +294,15 @@ export function LiveAgentNetwork({ snapshot, selectedId, onSelect, replayCursor,
     setRfEdges(edges);
   }, [nodes, edges, selectedId]);
 
+  // Fit only when the task (or first layout) changes — not on every live sequence tick.
+  const taskId = snapshot?.task_id || "";
   useEffect(() => {
     if (!rf || nodeCount === 0) return;
     const t = setTimeout(() => {
       rf.fitView({ padding: 0.35, minZoom: 0.35, maxZoom: 1.4 });
     }, 50);
     return () => clearTimeout(t);
-  }, [rf, nodeCount, snapshot?.sequence]);
+  }, [rf, nodeCount, taskId]);
 
   const onNodeClick = useCallback(
     (_: unknown, node: Node) => {

@@ -13,11 +13,28 @@ import {
   type TaskEvaluation,
   type TaskEvent,
 } from "@/lib/api";
+import {
+  pageVisible,
+  TASK_POLL_MS,
+  TASK_POLL_MS_WHEN_WS,
+} from "@/lib/livePoll";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
-/** HTTP poll for task drawer. Graph WS lives in useVisualRuntime — do not open a second socket. */
-export function useTaskLive(taskId: string | null) {
+export type UseTaskLiveOptions = {
+  /** True when TaskNetworkPanel / useVisualRuntime WS is connected. */
+  graphWsConnected?: boolean;
+};
+
+/**
+ * HTTP poll for task drawer.
+ * Graph WS lives in useVisualRuntime — do not open a second socket.
+ * When graph WS is healthy, slow to reconcile-only cadence.
+ */
+export function useTaskLive(
+  taskId: string | null,
+  opts?: UseTaskLiveOptions,
+) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
@@ -28,6 +45,8 @@ export function useTaskLive(taskId: string | null) {
 
   const aliveRef = useRef(true);
   const shownIdRef = useRef<string | null>(null);
+  const wsRef = useRef(!!opts?.graphWsConnected);
+  wsRef.current = !!opts?.graphWsConnected;
 
   const refresh = useCallback(async (id: string, extras = true) => {
     const [t, e] = await Promise.all([getTask(id), getTaskEvents(id)]);
@@ -78,27 +97,42 @@ export function useTaskLive(taskId: string | null) {
 
     let timer: ReturnType<typeof setTimeout> | undefined;
 
+    const schedule = () => {
+      const ms = wsRef.current ? TASK_POLL_MS_WHEN_WS : TASK_POLL_MS;
+      timer = setTimeout(() => void tick(), ms);
+    };
+
     async function tick() {
+      if (!aliveRef.current) return;
+      if (!pageVisible()) {
+        schedule();
+        return;
+      }
       try {
         const t = await refresh(taskId!);
         if (!aliveRef.current) return;
-
-        if (TERMINAL.has(t.status)) {
-          return;
-        }
+        if (TERMINAL.has(t.status)) return;
       } catch (err) {
         if (aliveRef.current) {
           setError(err instanceof Error ? err.message : "poll failed");
         }
       }
-
-      if (aliveRef.current) timer = setTimeout(tick, 8000);
+      if (aliveRef.current) schedule();
     }
+
+    const onVis = () => {
+      if (!document.hidden && aliveRef.current) {
+        if (timer) clearTimeout(timer);
+        void tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     void tick();
     return () => {
       aliveRef.current = false;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [taskId, nonce, refresh]);
 
@@ -109,8 +143,6 @@ export function useTaskLive(taskId: string | null) {
     evaluation,
     memories,
     error,
-    liveMode: "poll" as const,
-    wsConnected: false,
     setTask,
     reload: () => {
       if (taskId) invalidateTaskCache(taskId);

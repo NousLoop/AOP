@@ -1,7 +1,6 @@
 {
   "name": "Hermes",
   "description": "Unified Hermes Agent harness. Runs non-interactive hermes chat.",
-  "url": "http://127.0.0.1:8015/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",

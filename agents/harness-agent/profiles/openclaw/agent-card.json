@@ -1,7 +1,6 @@
 {
   "name": "OpenClaw",
   "description": "Unified OpenClaw harness agent. Runs headless via openclaw agent exec.",
-  "url": "http://127.0.0.1:8014/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",

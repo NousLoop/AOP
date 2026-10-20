@@ -2,7 +2,9 @@
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
-ENV CGO_ENABLED=0 GOOS=linux GOPROXY=https://goproxy.cn,direct
+# Default: China mirror for local/cloud-CN builds; CI/CD passes proxy.golang.org
+ARG GOPROXY=https://goproxy.cn,direct
+ENV CGO_ENABLED=0 GOOS=linux GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .

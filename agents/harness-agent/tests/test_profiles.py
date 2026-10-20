@@ -24,6 +24,8 @@ def test_all_profiles_load():
         assert (PROFILES / name / "system.md").exists()
         skills = card.get("skills") or []
         assert skills == [], name
+        # Endpoint is set by aopd / AGENT_URL / PORT — not baked into the card.
+        assert "url" not in card, name
 
 
 def test_only_harness_agent_dir_exists():

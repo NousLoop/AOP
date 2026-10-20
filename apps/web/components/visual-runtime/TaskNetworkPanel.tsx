@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   apiErrorMessage,
@@ -28,11 +28,14 @@ export function TaskNetworkPanel({
   taskId,
   createdAt,
   onBusyChange,
+  onWsConnectedChange,
   embedded = false,
 }: {
   taskId: string;
   createdAt?: string;
   onBusyChange?: (busy: boolean) => void;
+  /** Surface graph WS health to parent (drawer poll cadence / badge). */
+  onWsConnectedChange?: (connected: boolean) => void;
   embedded?: boolean;
 }) {
   const { graph, events, isConnected, stats, refresh, error } =
@@ -40,6 +43,14 @@ export function TaskNetworkPanel({
   const { snapshot: preflight } = usePreflight();
   const [selected, setSelected] = useState<VisualGraphNode | null>(null);
   const [ctrlError, setCtrlError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onWsConnectedChange?.(isConnected);
+  }, [isConnected, onWsConnectedChange]);
+
+  useEffect(() => {
+    return () => onWsConnectedChange?.(false);
+  }, [onWsConnectedChange]);
 
   const run = useCallback(
     async (fn: () => Promise<unknown>) => {

@@ -118,13 +118,14 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     if (!enabled) return;
     if (typeof window === "undefined") return;
 
-    const apiKey = process.env.NEXT_PUBLIC_API_KEY || "";
+    // Query api_key removed on Gateway; WS relies on AUTH_REQUIRED=false locally
+    // or a future cookie/ticket. Do not put session tokens in the URL.
     const path = customPath
       ? customPath
       : taskId
         ? `/v1/tasks/${taskId}/events/ws`
         : `/v1/events/ws`;
-    const wsUrl = buildWsUrl(path, apiKey || undefined);
+    const wsUrl = buildWsUrl(path);
 
     const existing = wsRef.current;
     if (

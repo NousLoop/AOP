@@ -15,43 +15,13 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { TaskNode, TaskPlan } from "@/lib/api";
 import { reactFlowOnError, useClientMounted } from "@/lib/reactFlow";
+import { agentDisplayName, hopAgentKey } from "./agentLabels";
 import { STATUS_COLOR, flowStatusLabel, flowVisualStatus } from "./taskFlowStatus";
 import {
   TASK_FLOW_EDGE_TYPES,
   TASK_FLOW_NODE_TYPES,
   type DagNodeData,
 } from "./taskFlowTypes";
-
-/** Friendly labels for work agents (plan hop is agent_key). */
-const AGENT_LABEL: Record<string, string> = {
-  "claude-code": "Claude Code",
-  "deepseek-harness": "DeepSeek",
-  openclaw: "OpenClaw",
-  hermes: "Hermes",
-  pi: "Pi",
-  "aopd-claude-code": "aopd Claude Code",
-  "aopd-deepseek-harness": "aopd DeepSeek Harness",
-  "aopd-openclaw": "aopd OpenClaw",
-  "aopd-hermes": "aopd Hermes",
-  "aopd-pi": "aopd Pi",
-};
-
-export function hopAgentKey(node: {
-  id?: string;
-  agent_key?: string | null;
-  agent_name?: string | null;
-}): string {
-  const assigned = (node.agent_key || "").trim();
-  if (assigned) return assigned;
-  return (node.agent_name || node.id || "agent").trim();
-}
-
-export function agentDisplayName(key?: string | null, fallbackName?: string | null): string {
-  const k = (key || "").trim();
-  if (fallbackName && fallbackName.trim()) return fallbackName.trim();
-  if (!k) return "Agent";
-  return AGENT_LABEL[k] || k;
-}
 
 function minimapNodeColor(n: Node) {
   const st = (n.data as DagNodeData | undefined)?.status;

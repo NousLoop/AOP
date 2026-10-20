@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { getAuthMe, getSessionToken, logout, setSessionToken } from "@/lib/api";
+import { clearLegacySessionToken, getAuthMe, logout } from "@/lib/api";
 import { PreflightBanner } from "@/components/shell/PreflightBanner";
 import { PreflightProvider, usePreflight } from "@/hooks/usePreflight";
 
@@ -26,6 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
 
   useEffect(() => {
+    clearLegacySessionToken();
     let cancelled = false;
     (async () => {
       try {
@@ -35,13 +36,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           setAuthed(true);
           setUserLabel(me.user?.display_name || me.email || me.name || "已登录");
         } else {
-          setAuthed(!!getSessionToken());
-          setUserLabel(getSessionToken() ? "会话" : "访客");
+          setAuthed(false);
+          setUserLabel("访客");
         }
       } catch {
         if (!cancelled) {
-          // Drop stale local session so API Key / anonymous mode can work.
-          if (getSessionToken()) setSessionToken(null);
           setAuthed(false);
           setUserLabel("访客");
         }
@@ -58,7 +57,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
-    setSessionToken(null);
+    clearLegacySessionToken();
     setAuthed(false);
     setUserLabel("访客");
     router.push("/login");
