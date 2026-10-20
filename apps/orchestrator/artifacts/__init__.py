@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ from urllib.parse import urlparse
 
 from minio import Minio
 from minio.error import S3Error
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_BUCKET = "aop-artifacts"
@@ -227,6 +230,9 @@ class ArtifactStore:
             # Race or already exists
             if exc.code not in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
                 raise
+        except Exception as exc:  # noqa: BLE001
+            # CI/unit tests often run without MinIO; defer failure until upload/download.
+            logger.warning("MinIO ensure_bucket skipped (%s): %s", self.endpoint, exc)
 
     def object_key(self, task_id: str, node_key: str, name: str) -> str:
         safe_name = name.replace("\\", "/").lstrip("/")

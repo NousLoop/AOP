@@ -25,6 +25,8 @@ _DEFAULT_ALLOWED_HOSTS = (
     "claude-code",
     "deepseek-harness",
     "pi",
+    "openclaw",
+    "hermes",
     "harness-agent",
     "host.docker.internal",
 )

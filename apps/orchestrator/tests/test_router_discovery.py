@@ -100,13 +100,28 @@ def test_discover_exclude_agent_ids(monkeypatch):
 
 
 def test_discover_normalizes_endpoint_for_host_runtime(monkeypatch):
-    monkeypatch.delenv("AOP_RUNTIME", raising=False)
+    monkeypatch.setenv("AOP_RUNTIME", "host")
     router = _router_with(
         monkeypatch,
-        [_candidate("rag-agent", skills=["knowledge-search"], endpoint="http://rag-agent:8002/")],
+        [
+            _candidate(
+                "claude-code",
+                skills=["knowledge-search"],
+                endpoint="http://claude-code:8011/",
+            ),
+            _candidate(
+                "rag-agent",
+                skills=["knowledge-search"],
+                endpoint="http://rag-agent:8002/",
+            ),
+        ],
     )
     result = router.discover(required_skills=["knowledge-search"])
-    assert result["candidates"][0]["endpoint"] == "http://127.0.0.1:8002/"
+    by_key = {c["agent_key"]: c["endpoint"] for c in result["candidates"]}
+    # Harness profiles remap known docker DNS → host gateway path
+    assert by_key["claude-code"] == "http://127.0.0.1:8020/agents/claude-code/"
+    # Unknown service hostnames stay as registered
+    assert by_key["rag-agent"] == "http://rag-agent:8002/"
 
 
 def test_route_returns_selected_agent(monkeypatch):

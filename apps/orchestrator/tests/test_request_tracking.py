@@ -56,9 +56,13 @@ def sample_agent_id(database_url):
     
     yield agent_id
     
-    # Cleanup
+    # Cleanup (requests reference agents; delete children first)
     with psycopg.connect(database_url) as conn:
         with conn.transaction():
+            conn.execute(
+                "DELETE FROM a2a_requests WHERE agent_id = %s::uuid",
+                (agent_id,),
+            )
             conn.execute("DELETE FROM agents WHERE id = %s::uuid", (agent_id,))
 
 
@@ -127,39 +131,6 @@ def sample_node_id(sample_task_id, database_url):
             )
     
     return node_id
-
-
-@pytest.fixture
-def sample_agent_id(database_url):
-    """Create a sample agent in database and return its ID."""
-    import psycopg
-    from psycopg.rows import dict_row
-    
-    agent_id = str(uuid.uuid4())
-    tenant_id = "00000000-0000-0000-0000-000000000001"
-    
-    with psycopg.connect(database_url, row_factory=dict_row) as conn:
-        with conn.transaction():
-            conn.execute(
-                """
-                INSERT INTO agents (
-                  id, tenant_id, agent_key, name, protocol, status, 
-                  created_at, updated_at
-                ) VALUES (
-                  %s::uuid, %s::uuid, %s, %s, %s, %s, now(), now()
-                )
-                """,
-                (
-                    agent_id,
-                    tenant_id,
-                    "test-agent",
-                    "Test Agent",
-                    "A2A",
-                    "active",
-                ),
-            )
-    
-    return agent_id
 
 
 class TestRequestTrackingService:
