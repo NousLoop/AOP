@@ -207,7 +207,8 @@ services:
 
   gateway:
     build:
-      context: ../apps/gateway
+      context: ..
+      dockerfile: apps/gateway/Dockerfile
     container_name: aop-gateway
     environment:
       GATEWAY_ADDR: ":8080"

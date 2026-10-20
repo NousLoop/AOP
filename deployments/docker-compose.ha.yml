@@ -102,8 +102,8 @@ services:
   # Gateway with Load Balancing
   gateway:
     build:
-      context: ../apps/gateway
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: apps/gateway/Dockerfile
     container_name: aop-gateway
     environment:
       - DATABASE_URL=postgresql://aop:aop@postgres:5432/aop
